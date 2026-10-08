@@ -242,3 +242,24 @@ def test_auto_approve_off_in_config_keeps_candidates(tmp_path):
     code, out, _ = s.run(["朝はコーヒーを飲むんだ", "/quit"], adapter=_auto_script())
     text = "\n".join(out)
     assert "記憶に残しました" not in text and "未承認" in text
+
+
+def test_example_config_file_loads():
+    from pathlib import Path
+
+    from kodama.config import load_config
+
+    example = Path(__file__).resolve().parents[1] / "kodama.example.toml"
+    cfg = load_config(example)
+    assert cfg.max_tokens > 0
+
+
+def test_unknown_secret_like_key_is_still_rejected(tmp_path):
+    import pytest
+
+    from kodama.config import ConfigError, load_config
+
+    p = tmp_path / "k.toml"
+    p.write_text('anthropic_api_key = "x"\n', encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)

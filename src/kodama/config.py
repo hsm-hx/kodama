@@ -67,8 +67,10 @@ class Config:
 
 
 def _check_no_secrets(values: dict[str, Any]) -> None:
+    known = {f.name for f in dataclasses.fields(Config)}
     for k in values:
-        if k in _SECRET_NAME_ALLOWED:
+        # 既知の設定項目（max_tokens など）は秘密ではない。未知の項目だけを名前で判定する。
+        if k in _SECRET_NAME_ALLOWED or k in known:
             continue
         if any(w in k.lower() for w in _SECRET_WORDS):
             raise ConfigError(
