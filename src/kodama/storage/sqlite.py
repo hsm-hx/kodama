@@ -12,8 +12,8 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from zoneinfo import ZoneInfo
 
 from kodama.domain import (
-    CHARACTER_SPEAKERS,
     DEFAULT_TIMEZONE,
+    Cast,
     Entity,
     EntityKind,
     ImportStats,
@@ -28,7 +28,6 @@ from kodama.domain import (
     PersonaVersion,
     Session,
     SourceExcerpt,
-    Speaker,
     TranscriptEntry,
     Turn,
     TurnStatus,
@@ -43,7 +42,9 @@ from kodama.storage.base import (
     NotFound,
 )
 
-SCHEMA_VERSION = 2  # 2: turns に cache_read_tokens / cache_write_tokens を追加（1 からは自動移行）
+# 2: turns に cache_read_tokens / cache_write_tokens を追加
+# 3: 話者IDを固定値の CHECK 制約から外し、cast（参加者）を schema_info に記録
+SCHEMA_VERSION = 3
 MAX_ERROR_CHARS = 500
 
 _SCHEMA = """
@@ -94,7 +95,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     turn_id TEXT NOT NULL REFERENCES turns(id),
     seq INTEGER NOT NULL,
-    speaker TEXT NOT NULL CHECK (speaker IN ('user', 'ren', 'aoi')),
+    speaker TEXT NOT NULL,
     text TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (session_id, seq)
@@ -111,7 +112,7 @@ CREATE TABLE IF NOT EXISTS memory_versions (
     memory_id TEXT NOT NULL,
     body TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('user_stated', 'character_view', 'imagination')),
-    perspective TEXT CHECK (perspective IS NULL OR perspective IN ('ren', 'aoi')),
+    perspective TEXT,
     subjects TEXT NOT NULL,
     tags TEXT NOT NULL,
     aliases TEXT NOT NULL,
@@ -194,6 +195,7 @@ class SQLiteStore:
     def __init__(
         self,
         path: str | Path,
+        cast: Cast | None = None,
         timezone: str = DEFAULT_TIMEZONE,
         fault_hook: Callable[[str], None] | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -209,10 +211,50 @@ class SQLiteStore:
         if self.path != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
         self._init_schema()
+        self.cast: Cast | None = None
+        self._bind_cast(cast)
 
     # ------------------------------------------------------------------ infra
 
+    def _stored_schema_version(self) -> int | None:
+        has = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_info'"
+        ).fetchone()
+        if has is None:
+            return None
+        row = self._conn.execute("SELECT value FROM schema_info WHERE key='schema_version'").fetchone()
+        return int(row["value"]) if row else None
+
+    def _rebuild_without_speaker_checks(self) -> None:
+        """v2以前のDBは話者IDを固定の CHECK 制約で縛っていた。表を作り直して制約を外す（データはそのまま）。"""
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self._write() as c:
+                ddl = {
+                    r["name"]: r["sql"]
+                    for r in c.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")
+                }
+                for table, column in (("messages", "speaker"), ("memory_versions", "perspective")):
+                    old_sql = ddl.get(table) or ""
+                    new_sql = _table_ddl(table)
+                    if "CHECK (" + column not in old_sql and f"CHECK ({column}" not in old_sql:
+                        continue
+                    c.execute(new_sql.replace(f"CREATE TABLE IF NOT EXISTS {table}", f"CREATE TABLE {table}__new", 1))
+                    cols = [r["name"] for r in c.execute(f"PRAGMA table_info({table})")]
+                    col_list = ", ".join(cols)
+                    c.execute(f"INSERT INTO {table}__new ({col_list}) SELECT {col_list} FROM {table}")
+                    c.execute(f"DROP TABLE {table}")
+                    c.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+                violations = c.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise InvalidState(f"foreign key violations after schema upgrade: {len(violations)}")
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+
     def _init_schema(self) -> None:
+        version = self._stored_schema_version()
+        if version is not None and version < 3:
+            self._rebuild_without_speaker_checks()
         with self._write() as c:
             for stmt in _SCHEMA.split(";"):
                 if stmt.strip():
@@ -223,8 +265,9 @@ class SQLiteStore:
                     "INSERT INTO schema_info(key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
                 )
-            elif int(row["value"]) == 1:
+            elif int(row["value"]) in (1, 2):
                 # v1 -> v2: 列の追加だけ（既存データはそのまま、新列は NULL=不明）。BEGIN IMMEDIATE 内なので原子的
+                # v2 -> v3: CHECK 制約の除去は _rebuild_without_speaker_checks で済んでいる
                 have = {r["name"] for r in c.execute("PRAGMA table_info(turns)")}
                 for col in ("cache_read_tokens", "cache_write_tokens"):
                     if col not in have:
@@ -234,6 +277,46 @@ class SQLiteStore:
                 raise InvalidState(
                     f"unsupported database schema_version {row['value']} (expected {SCHEMA_VERSION})"
                 )
+
+    # ------------------------------------------------------------------ cast
+
+    def _bind_cast(self, cast: Cast | None) -> None:
+        """DBに記録された cast と、渡された cast（人物設定パック）を突き合わせる。
+
+        - 記録あり: 話者IDが一致しなければ拒否。表示名の変更は記録を更新する。
+        - 記録なし（新規DB・旧DB）: 既存データの話者・視点・人物設定キーが cast に含まれることを確かめて記録する。
+        """
+        with self._write() as c:
+            row = c.execute("SELECT value FROM schema_info WHERE key='cast'").fetchone()
+            stored = Cast.from_dict(json.loads(row["value"])) if row else None
+            if stored is not None:
+                if cast is not None and not stored.same_ids(cast):
+                    raise InvalidState(
+                        "このDBの話者ID（" + ", ".join(stored.speaker_ids) + "）と、人物設定パックの話者ID（"
+                        + ", ".join(cast.speaker_ids) + "）が一致しません"
+                    )
+                if cast is not None and cast != stored:
+                    c.execute("UPDATE schema_info SET value = ? WHERE key = 'cast'", (_dumps(cast.to_dict()),))
+                self.cast = cast or stored
+                return
+            if cast is None:
+                return
+            problems = _cast_mismatches(c, cast)
+            if problems:
+                raise InvalidState("人物設定パックの話者がこのDBのデータと合いません: " + "; ".join(problems))
+            c.execute("INSERT INTO schema_info(key, value) VALUES ('cast', ?)", (_dumps(cast.to_dict()),))
+            self.cast = cast
+
+    def get_cast(self) -> Cast | None:
+        return self.cast
+
+    def _require_cast(self) -> Cast:
+        if self.cast is None:
+            raise InvalidState("このDBには参加者（cast）が設定されていません。人物設定パックを指定して開いてください。")
+        return self.cast
+
+    def _character_ids(self) -> tuple[str, ...] | None:
+        return self.cast.character_ids if self.cast is not None else None
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -336,6 +419,7 @@ class SQLiteStore:
     ) -> tuple[Turn, Message]:
         if not isinstance(user_text, str) or not user_text.strip():
             raise ValueError("user_text must be non-empty")
+        user_id = self._require_cast().user_id
         with self._write() as c:
             self._get(c, "sessions", session_id)
             pending = c.execute(
@@ -368,7 +452,7 @@ class SQLiteStore:
                 session_id=session_id,
                 turn_id=turn.id,
                 seq=self._next_seq(c, "messages", session_id),
-                speaker=Speaker.USER,
+                speaker=user_id,
                 text=user_text,
                 created_at=now,
             )
@@ -378,16 +462,17 @@ class SQLiteStore:
     def complete_turn(
         self,
         turn_id: str,
-        utterances: Sequence[tuple[Speaker | str, str]],
+        utterances: Sequence[tuple[str, str]],
         usage: Usage | None = None,
         candidates: Sequence[MemoryDraft] = (),
         model: str | None = None,
         candidate_status: MemoryStatus = MemoryStatus.CANDIDATE,
     ) -> list[Message]:
-        parsed: list[tuple[Speaker, str]] = []
+        cast = self._require_cast()
+        parsed: list[tuple[str, str]] = []
         for speaker, text in utterances:
-            sp = Speaker(speaker)
-            if sp not in CHARACTER_SPEAKERS:
+            sp = str(speaker)
+            if sp not in cast.character_ids:
                 raise ValueError(f"invalid reply speaker: {speaker}")
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("empty utterance")
@@ -398,16 +483,16 @@ class SQLiteStore:
         if candidate_status not in (MemoryStatus.CANDIDATE, MemoryStatus.APPROVED):
             raise ValueError("model memories must be saved as candidate or approved")
         for draft in candidates:
-            draft.validate()
+            draft.validate(cast.character_ids)
 
         with self._write() as c:
             turn: Turn = self._get(c, "turns", turn_id)
             if turn.status == TurnStatus.COMPLETED:
-                return self._select(c, "messages", "turn_id = ? AND speaker != 'user'", (turn_id,))
+                return self._select(c, "messages", "turn_id = ? AND speaker != ?", (turn_id, cast.user_id))
             if turn.status != TurnStatus.PENDING:
                 raise InvalidState(f"turn {turn_id} is {turn.status.value}")
             user_msg = c.execute(
-                "SELECT id FROM messages WHERE turn_id = ? AND speaker = 'user'", (turn_id,)
+                "SELECT id FROM messages WHERE turn_id = ? AND speaker = ?", (turn_id, cast.user_id)
             ).fetchone()
             now = self._now()
             seq = self._next_seq(c, "messages", turn.session_id)
@@ -541,6 +626,8 @@ class SQLiteStore:
     ) -> PersonaVersion:
         if not body.strip():
             raise ValueError("persona body must be non-empty")
+        if self.cast is not None and persona_key not in self.cast.persona_keys:
+            raise ValueError(f"unknown persona key: {persona_key}")
         content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
         with self._write() as c:
             active = self._select(
@@ -590,7 +677,7 @@ class SQLiteStore:
         reason: str | None,
         source_excerpt_ids: tuple[str, ...] | None = None,
     ) -> MemoryVersion:
-        draft.validate()
+        draft.validate(self._character_ids())
         excerpts = draft.source_excerpt_ids if source_excerpt_ids is None else source_excerpt_ids
         self._check_sources(c, source_message_ids, excerpts)
         now = self._now()
@@ -675,7 +762,7 @@ class SQLiteStore:
         reason: str | None = None,
         origin: MemoryOrigin = MemoryOrigin.USER_EXPLICIT,
     ) -> MemoryVersion:
-        draft.validate()
+        draft.validate(self._character_ids())
         with self._write() as c:
             old: MemoryVersion = self._get(c, "memory_versions", version_id)
             if old.status not in (MemoryStatus.APPROVED, MemoryStatus.CANDIDATE):
@@ -893,6 +980,8 @@ class SQLiteStore:
                         records[section].append(_TABLES[section][0].from_dict(raw))
                 except (ValueError, TypeError, KeyError) as exc:
                     errors.append(f"{section}[{i}]: {exc}")
+        if self.cast is not None:
+            errors += _snapshot_cast_errors(records, self.cast)
         if errors:
             raise ImportValidationError(errors)
 
@@ -935,6 +1024,41 @@ class SQLiteStore:
         except sqlite3.IntegrityError as exc:
             raise ImportValidationError([f"integrity error: {exc}"]) from exc
         return ImportStats(inserted=inserted, skipped=skipped)
+
+
+def _table_ddl(table: str) -> str:
+    for stmt in _SCHEMA.split(";"):
+        if stmt.strip().startswith(f"CREATE TABLE IF NOT EXISTS {table} ("):
+            return stmt.strip()
+    raise KeyError(table)
+
+
+def _cast_mismatches(c: sqlite3.Connection, cast: Cast) -> list[str]:
+    problems: list[str] = []
+    speakers = {r[0] for r in c.execute("SELECT DISTINCT speaker FROM messages")}
+    if extra := sorted(speakers - set(cast.speaker_ids)):
+        problems.append(f"messages.speaker {extra}")
+    persp = {r[0] for r in c.execute("SELECT DISTINCT perspective FROM memory_versions WHERE perspective IS NOT NULL")}
+    if extra := sorted(persp - set(cast.character_ids)):
+        problems.append(f"memory_versions.perspective {extra}")
+    keys = {r[0] for r in c.execute("SELECT DISTINCT persona_key FROM persona_versions")}
+    if extra := sorted(keys - set(cast.persona_keys)):
+        problems.append(f"persona_versions.persona_key {extra}")
+    return problems
+
+
+def _snapshot_cast_errors(records: dict[str, list[Any]], cast: Cast) -> list[str]:
+    errors: list[str] = []
+    for m in records.get("messages", []):
+        if m.speaker not in cast.speaker_ids:
+            errors.append(f"messages {m.id}: speaker {m.speaker!r} is not in the cast")
+    for v in records.get("memory_versions", []):
+        if v.perspective is not None and v.perspective not in cast.character_ids:
+            errors.append(f"memory_versions {v.id}: perspective {v.perspective!r} is not a character")
+    for p in records.get("persona_versions", []):
+        if p.persona_key not in cast.persona_keys:
+            errors.append(f"persona_versions {p.id}: persona_key {p.persona_key!r} is not in the cast")
+    return errors
 
 
 def _escape_like(term: str) -> str:

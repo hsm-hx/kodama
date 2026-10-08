@@ -8,10 +8,10 @@ from zoneinfo import ZoneInfo
 from kodama import migration
 from kodama.config import Config
 from kodama.context import build_context
-from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, Speaker
+from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus
 from kodama.recall import RecallLimits, extract_terms, recall
 from kodama.storage.sqlite import SQLiteStore
-from seed import seed_store
+from seed import CAST, PACK, seed_store
 
 
 def _ids(result):
@@ -72,7 +72,7 @@ def test_unapproved_rejected_and_invalidated_excluded(store, seed):
     facts, imag = _ids(result)
     assert seed.mem_clothes_view in facts  # 承認済みの葵の受け取り方
     view = next(r.version for r in result.memories if r.version.id == seed.mem_clothes_view)
-    assert view.kind == MemoryKind.CHARACTER_VIEW and view.perspective == Speaker.AOI
+    assert view.kind == MemoryKind.CHARACTER_VIEW and view.perspective == "aoi"
     reasons = _reasons(result)
     assert reasons[seed.mem_imagination_rejected] == "rejected"
     assert reasons[seed.mem_pending_candidate] == "not_approved"
@@ -112,7 +112,7 @@ def test_approved_imagination_is_separate_from_facts(store, seed):
 
 
 def test_same_selection_before_and_after_migration(tmp_path):
-    source = SQLiteStore(tmp_path / "a.db")
+    source = SQLiteStore(cast=CAST, path=tmp_path / "a.db")
     seed_store(source)
     queries = ["コーヒー", "作業部屋", "服作りとミシン", "あおちゃん", "珈琲"]
     limits = RecallLimits(max_memories=2, max_links_per_node=1)
@@ -120,7 +120,7 @@ def test_same_selection_before_and_after_migration(tmp_path):
     migration.export_to_file(source, tmp_path / "e.json")
     source.close()
     migration.import_file(tmp_path / "e.json", tmp_path / "b.db")
-    target = SQLiteStore(tmp_path / "b.db")
+    target = SQLiteStore(cast=CAST, path=tmp_path / "b.db")
     after = [(_ids(recall(target, q, limits)), _reasons(recall(target, q, limits))) for q in queries]
     target.close()
     assert before == after
@@ -131,7 +131,7 @@ def test_same_selection_before_and_after_migration(tmp_path):
 def test_context_limit_drops_old_messages_and_records_it(store, seed):
     cfg = Config(max_context_chars=400, max_recent_messages=20)
     now = datetime(2026, 10, 8, 22, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
-    plan = build_context(store, cfg, seed.session1, "コーヒー", now)
+    plan = build_context(store, cfg, PACK, seed.session1, "コーヒー", now)
     # 人物設定だけで上限を超えるので、外せるものは外れ、外したことが記録される
     assert plan.excluded_message_ids
     assert {x.reason for x in plan.excluded_memories} >= {"context_limit"}
@@ -141,7 +141,7 @@ def test_context_limit_drops_old_messages_and_records_it(store, seed):
 
 def test_context_marks_unanswered_inputs_and_wraps_data(store, seed):
     cfg = Config()
-    plan = build_context(store, cfg, seed.session1, "続きを話そう")
+    plan = build_context(store, cfg, PACK, seed.session1, "続きを話そう")
     assert "（この入力には応答していない）" in plan.user_content
     assert plan.user_content.index("<data>") < plan.user_content.index("<current_input>")
     assert plan.persona_version_ids == [seed.persona_common, seed.persona_ren_v2, seed.persona_aoi]

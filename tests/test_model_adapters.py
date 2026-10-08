@@ -15,7 +15,17 @@ from kodama.model.base import (
 )
 from kodama.model.claude import ClaudeAdapter
 from kodama.model.mock import MockAdapter, ScriptedAdapter, choose_speakers
-from kodama.reply import REPLY_SCHEMA, parse_reply
+from kodama.reply import parse_reply as _parse_reply, reply_schema
+from seed import CAST, PACK
+
+IDS = CAST.character_ids
+REPLY_SCHEMA = reply_schema(IDS)
+CHARACTERS = [{"id": c.id, "display_name": c.display_name, "aliases": list(c.address_aliases)} for c in PACK.characters]
+
+
+def parse_reply(raw):
+    return _parse_reply(raw, IDS)
+
 
 SECRET = "sk-test-SECRET-VALUE-1234567890"
 
@@ -70,7 +80,8 @@ def _adapter(behavior, monkeypatch, **kw):
     return a, made
 
 
-REQ = ModelRequest(system_blocks=["共通", "蓮"], user_content="<current_input>こんにちは</current_input>", max_tokens=1200, timeout_s=30.0)
+REQ = ModelRequest(system_blocks=["共通", "蓮"], user_content="<current_input>こんにちは</current_input>", max_tokens=1200, timeout_s=30.0,
+                   metadata={"characters": CHARACTERS}, output_schema=REPLY_SCHEMA)
 OK = json.dumps({"utterances": [{"speaker": "ren", "text": "うん。"}], "memory_candidates": []}, ensure_ascii=False)
 
 
@@ -174,8 +185,9 @@ def test_mock_is_marked_and_valid():
     ],
 )
 def test_mock_addressing(text, speakers):
-    assert choose_speakers(text) == speakers
-    req = ModelRequest(system_blocks=[], user_content="", max_tokens=10, timeout_s=1, metadata={"current_input": text})
+    assert choose_speakers(text, CHARACTERS) == speakers
+    req = ModelRequest(system_blocks=[], user_content="", max_tokens=10, timeout_s=1,
+                       metadata={"current_input": text, "characters": CHARACTERS})
     res = MockAdapter().generate(req)
     assert [s for s, _ in parse_reply(res.raw_text).utterances] == speakers
 

@@ -9,7 +9,7 @@ from kodama import cli
 from kodama.model.base import ModelTimeout
 from kodama.model.mock import MockAdapter, ScriptedAdapter
 
-REPO_PERSONAS = Path(__file__).resolve().parent.parent / "personas"
+REPO_PERSONAS = Path(__file__).resolve().parent.parent / "packs" / "example"
 
 
 class Session:
@@ -22,7 +22,7 @@ class Session:
             shutil.copytree(REPO_PERSONAS, self.personas)
         self.db = tmp_path / "data" / "k.db"
         self.config = tmp_path / "kodama.toml"
-        self.config.write_text(f'provider = "{provider}"\npersonas_dir = "{self.personas}"\n', encoding="utf-8")
+        self.config.write_text(f'provider = "{provider}"\npersona_pack = "{self.personas}"\n', encoding="utf-8")
 
     def run(self, lines, adapter=None, extra=()):
         out: list[str] = []
@@ -96,7 +96,7 @@ def test_errors_are_operations_not_dialogue(tmp_path):
 
 def test_works_without_key_or_model(tmp_path):
     s = Session(tmp_path)
-    s.config.write_text(f'personas_dir = "{s.personas}"\n', encoding="utf-8")
+    s.config.write_text(f'persona_pack = "{s.personas}"\n', encoding="utf-8")
     code, out, _ = s.run(["ねえ、聞いて", "/memory add あなたはねこが好きだと話した --tags ねこ", "/memory list",
                           "/history", "/context ねこの話", "/quit"])
     text = "\n".join(out)

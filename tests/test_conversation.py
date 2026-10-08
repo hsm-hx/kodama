@@ -8,12 +8,13 @@ import pytest
 
 from kodama.config import Config
 from kodama.conversation import ConversationService
-from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, Speaker, TurnStatus
+from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, TurnStatus
 from kodama.model.base import ModelConnectionError, ModelTimeout
 from kodama.model.mock import MockAdapter, ScriptedAdapter
 from kodama.storage.sqlite import SQLiteStore
+from seed import CAST, PACK
 
-PERSONAS = str(Path(__file__).resolve().parent.parent / "personas")
+PERSONAS = str(Path(__file__).resolve().parent.parent / "packs" / "example")
 
 
 def reply(*utts, candidates=()):
@@ -22,18 +23,18 @@ def reply(*utts, candidates=()):
 
 @pytest.fixture
 def cfg(tmp_path):
-    return Config(db_path=str(tmp_path / "k.db"), personas_dir=PERSONAS)
+    return Config(db_path=str(tmp_path / "k.db"), persona_pack=PERSONAS)
 
 
 def open_service(cfg, adapter):
-    store = SQLiteStore(cfg.db_path, timezone=cfg.timezone)
-    svc = ConversationService(store, adapter, cfg)
+    store = SQLiteStore(cast=CAST, path=cfg.db_path, timezone=cfg.timezone)
+    svc = ConversationService(store, adapter, cfg, PACK)
     svc.startup()
     return store, svc
 
 
 def transcript(store, session_id):
-    return [(m.speaker.value, m.text) for m in store.list_messages(session_id)]
+    return [(m.speaker, m.text) for m in store.list_messages(session_id)]
 
 
 def test_mock_new_quit_restart_resume(cfg):
@@ -41,8 +42,8 @@ def test_mock_new_quit_restart_resume(cfg):
     s = store.create_session("初日")
     out1 = svc.send(s.id, "蓮、ただいま")
     out2 = svc.send(s.id, "コーヒー、おいしい。ほっとするよね")
-    assert out1.ok and out1.is_mock and [m.speaker for m in out1.replies] == [Speaker.REN]
-    assert out2.ok and [m.speaker for m in out2.replies] == [Speaker.REN, Speaker.AOI]
+    assert out1.ok and out1.is_mock and [m.speaker for m in out1.replies] == ["ren"]
+    assert out2.ok and [m.speaker for m in out2.replies] == ["ren", "aoi"]
     before = transcript(store, s.id)
     store.close()
 
@@ -94,7 +95,7 @@ def test_failures_keep_input_and_never_resend(cfg, item, kind):
 
 
 def test_crash_while_pending_is_marked_interrupted_without_resend(cfg):
-    store = SQLiteStore(cfg.db_path)
+    store = SQLiteStore(cast=CAST, path=cfg.db_path)
     s = store.create_session("s")
     store.begin_turn(s.id, "送信中に落ちた入力", "mock", "mock")  # API応答前にプロセスが落ちた状態
     store.close()
@@ -195,7 +196,7 @@ def test_system_blocks_strip_meta_but_stored_body_is_full(cfg):
 
     store, svc = open_service(cfg, MockAdapter())
     s = store.create_session("s")
-    plan = build_context(store, cfg, s.id, "やあ")
+    plan = build_context(store, cfg, PACK, s.id, "やあ")
     for block in plan.system_blocks:
         assert "<!--" not in block and "source:" not in block.split("\n")[0]
     for key, pv in plan.personas.items():
@@ -258,7 +259,7 @@ def test_auto_approve_export_import_keeps_status_and_origin(cfg, tmp_path):
     migration.export_to_file(store, exp, {"memory_auto_approve": True})
     store.close()
     migration.import_file(exp, tmp_path / "n.db", active_db_path=cfg.db_path)
-    new = SQLiteStore(tmp_path / "n.db")
+    new = SQLiteStore(cast=CAST, path=tmp_path / "n.db")
     [v] = new.list_memory_versions()
     assert v.status == MemoryStatus.APPROVED and v.origin == MemoryOrigin.MODEL_CANDIDATE
     new.close()

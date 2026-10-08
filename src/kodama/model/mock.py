@@ -12,9 +12,6 @@ from typing import Any, Iterable
 
 from .base import ModelRequest, ModelResult
 
-_ADDRESS_REN = re.compile(r"^\s*(蓮|れん|レン)\s*[、,，!！?？]")
-_ADDRESS_AOI = re.compile(r"^\s*(葵|あおい|アオイ)\s*[、,，!！?？]")
-
 _CURRENT_INPUT_RE = re.compile(r"<current_input>\s*(.*?)\s*</current_input>", re.DOTALL)
 
 
@@ -26,23 +23,30 @@ def _current_input(request: ModelRequest) -> str:
     return m.group(1) if m else request.user_content
 
 
-def choose_speakers(user_text: str) -> list[str]:
-    """モックの話者選択（決定的）。一人への明確な呼びかけならその人だけ。"""
-    if _ADDRESS_REN.match(user_text):
-        return ["ren"]
-    if _ADDRESS_AOI.match(user_text):
-        return ["aoi"]
-    # 短い相づち程度なら一人だけ（文字数の偶奇で決める）
+_PUNCT = "、,，!！?？ 　"
+
+
+def _characters(request: ModelRequest) -> list[dict[str, Any]]:
+    """request.metadata["characters"] = [{"id", "display_name", "aliases"}]（context が入れる）。"""
+    chars = request.metadata.get("characters")
+    if not isinstance(chars, list) or not chars:
+        raise ValueError("MockAdapter: request.metadata['characters'] がありません")
+    return chars
+
+
+def choose_speakers(user_text: str, characters: list[dict[str, Any]]) -> list[str]:
+    """モックの話者選択（決定的）。一人への明確な呼びかけ（文頭の名前＋読点など）ならその人だけ。"""
+    text = user_text.lstrip()
+    for c in characters:
+        for name in [c["display_name"], *c.get("aliases", [])]:
+            if text.startswith(name) and len(text) > len(name) and text[len(name)] in _PUNCT:
+                return [c["id"]]
+    ids = [c["id"] for c in characters]
+    # 短い相づち程度なら一人だけ（文字数で決める）
     stripped = user_text.strip()
     if len(stripped) <= 6:
-        return ["ren"] if len(stripped) % 2 == 0 else ["aoi"]
-    return ["ren", "aoi"]
-
-
-_MOCK_TEXT = {
-    "ren": "……モックの蓮の台詞です。",
-    "aoi": "モックの葵の台詞です。",
-}
+        return [ids[len(stripped) % len(ids)]]
+    return ids[:2]
 
 
 class MockAdapter:
@@ -55,9 +59,11 @@ class MockAdapter:
 
     def generate(self, request: ModelRequest) -> ModelResult:
         self.requests.append(request)
-        speakers = choose_speakers(_current_input(request))
+        characters = _characters(request)
+        names = {c["id"]: c["display_name"] for c in characters}
+        speakers = choose_speakers(_current_input(request), characters)
         payload = {
-            "utterances": [{"speaker": s, "text": _MOCK_TEXT[s]} for s in speakers],
+            "utterances": [{"speaker": s, "text": f"モックの{names[s]}の台詞です。"} for s in speakers],
             "memory_candidates": [],
         }
         return ModelResult(

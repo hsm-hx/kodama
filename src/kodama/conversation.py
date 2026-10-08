@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from kodama.config import Config
 from kodama.context import ContextPlan, build_context, to_model_request
-from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, MemoryVersion, Message, PersonaVersion, Speaker, Turn, TurnStatus, Usage
+from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, MemoryVersion, Message, PersonaVersion, Turn, TurnStatus, Usage
 from kodama.model.base import (
     ModelAdapter,
     ModelAPIError,
@@ -21,7 +21,7 @@ from kodama.model.base import (
     ModelTimeout,
     redact,
 )
-from kodama.personas import PERSONA_KEYS, PersonaFile, load_persona_files, unified_diff
+from kodama.personas import PersonaFile, PersonaPack, load_persona_file, load_persona_files, unified_diff
 from kodama.reply import InvalidReply, parse_reply
 
 
@@ -50,11 +50,11 @@ class PersonaReport:
     pending: dict[str, tuple[PersonaVersion, PersonaFile]] = field(default_factory=dict)  # 未承認の変更
 
 
-def sync_personas(store, personas_dir: str | Path) -> PersonaReport:
+def sync_personas(store, pack: PersonaPack) -> PersonaReport:
     """ファイルと有効版を比べる。有効版がなければ初回登録し、差があれば旧版のまま「未承認」として返す。"""
     report = PersonaReport()
-    files = load_persona_files(personas_dir)
-    for key in PERSONA_KEYS:
+    files = load_persona_files(pack)
+    for key in pack.persona_keys:
         f = files[key]
         active = store.get_active_persona(key)
         if active is None:
@@ -69,8 +69,8 @@ def persona_diff(active: PersonaVersion, f: PersonaFile) -> str:
     return unified_diff(active.body, f.body, f.key)
 
 
-def approve_persona(store, personas_dir: str | Path, key: str) -> PersonaVersion:
-    f = load_persona_files(personas_dir)[key]
+def approve_persona(store, pack: PersonaPack, key: str) -> PersonaVersion:
+    f = load_persona_file(pack, key)
     return store.activate_persona_version(key, f.body, f.path, note="本人が差分を確認して承認")
 
 
@@ -84,8 +84,16 @@ _ERROR_KINDS: list[tuple[type, str]] = [
 
 
 class ConversationService:
-    def __init__(self, store, adapter: ModelAdapter, config: Config, clock: Callable[[], datetime] | None = None):
+    def __init__(
+        self,
+        store,
+        adapter: ModelAdapter,
+        config: Config,
+        pack: PersonaPack,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.store = store
+        self.pack = pack
         self.adapter = adapter
         self.config = config
         self._tz = ZoneInfo(config.timezone)
@@ -94,11 +102,11 @@ class ConversationService:
     def startup(self) -> tuple[list[Turn], PersonaReport]:
         """未完了ターンを中断扱いにし（再送しない）、人物設定ファイルを確認する。"""
         recovered = self.store.recover_incomplete_turns()
-        report = sync_personas(self.store, self.config.personas_dir)
+        report = sync_personas(self.store, self.pack)
         return recovered, report
 
     def preview(self, session_id: str, text: str) -> ContextPlan:
-        return build_context(self.store, self.config, session_id, text, self._clock())
+        return build_context(self.store, self.config, self.pack, session_id, text, self._clock())
 
     def send(self, session_id: str, text: str) -> TurnOutcome:
         plan = self.preview(session_id, text)
@@ -144,7 +152,7 @@ class ConversationService:
         outcome.cache_read_tokens, outcome.cache_write_tokens = result.cache_read_tokens, result.cache_write_tokens
         usage = Usage(result.input_tokens, result.output_tokens, result.cache_read_tokens, result.cache_write_tokens)
         try:
-            parsed = parse_reply(result.raw_text)
+            parsed = parse_reply(result.raw_text, self.pack.cast.character_ids)
         except InvalidReply as e:
             outcome.error_kind = "invalid_reply"
             outcome.error_message = f"モデルの返答が形式に合わないため、会話として保存しませんでした（{e}）"
@@ -158,12 +166,12 @@ class ConversationService:
                 draft = MemoryDraft(
                     body=c["body"],
                     kind=MemoryKind(c["kind"]),
-                    perspective=Speaker(c["perspective"]) if c["perspective"] else None,
+                    perspective=c["perspective"] or None,
                     subjects=tuple(c["subjects"]),
                     tags=tuple(c["tags"]),
                     source_message_ids=(user_msg.id,),
                 )
-                draft.validate()
+                draft.validate(self.pack.cast.character_ids)
                 drafts.append(draft)
             except ValueError as e:
                 warnings.append(f"不正な記憶候補を捨てました: {e}")

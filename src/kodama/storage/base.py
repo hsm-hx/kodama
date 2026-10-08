@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Protocol, Sequence
 
 from kodama.domain import (
+    Cast,
     Entity,
     EntityKind,
     ImportStats,
@@ -23,7 +24,6 @@ from kodama.domain import (
     PersonaVersion,
     Session,
     SourceExcerpt,
-    Speaker,
     TranscriptEntry,
     Turn,
     TurnStatus,
@@ -93,7 +93,7 @@ class Store(Protocol):
     def complete_turn(
         self,
         turn_id: str,
-        utterances: Sequence[tuple[Speaker | str, str]],
+        utterances: Sequence[tuple[str, str]],
         usage: Usage | None = None,
         candidates: Sequence[MemoryDraft] = (),
         model: str | None = None,

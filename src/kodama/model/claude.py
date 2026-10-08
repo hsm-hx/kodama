@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from ..reply import REPLY_SCHEMA
 from .base import (
     ModelAPIError,
     ModelConfigError,
@@ -73,7 +72,9 @@ class ClaudeAdapter:
         return key
 
     def build_params(self, request: ModelRequest) -> dict[str, Any]:
-        output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": REPLY_SCHEMA}}
+        output_config: dict[str, Any] = {}
+        if request.output_schema is not None:
+            output_config["format"] = {"type": "json_schema", "schema": request.output_schema}
         if self.effort:
             output_config["effort"] = self.effort
         system: list[dict[str, Any]] = [{"type": "text", "text": b} for b in request.system_blocks]

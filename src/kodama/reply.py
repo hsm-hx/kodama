@@ -8,48 +8,51 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
-SPEAKERS = ("ren", "aoi")
 KINDS = ("user_stated", "character_view", "imagination")
 MAX_UTTERANCES = 4
 MAX_TEXT_CHARS = 1000
 MAX_CANDIDATES = 5
 
-REPLY_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "utterances": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "speaker": {"type": "string", "enum": list(SPEAKERS)},
-                    "text": {"type": "string"},
+
+def reply_schema(character_ids: Sequence[str]) -> dict[str, Any]:
+    """出力の JSON Schema。話者の enum は人物設定パックのキャラクターID。"""
+    speakers = list(character_ids)
+    return {
+        "type": "object",
+        "properties": {
+            "utterances": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "speaker": {"type": "string", "enum": speakers},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["speaker", "text"],
+                    "additionalProperties": False,
                 },
-                "required": ["speaker", "text"],
-                "additionalProperties": False,
+            },
+            "memory_candidates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "body": {"type": "string"},
+                        "kind": {"type": "string", "enum": list(KINDS)},
+                        "perspective": {"anyOf": [{"type": "string", "enum": speakers}, {"type": "null"}]},
+                        "subjects": {"type": "array", "items": {"type": "string"}},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["body", "kind", "perspective", "subjects", "tags"],
+                    "additionalProperties": False,
+                },
             },
         },
-        "memory_candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "body": {"type": "string"},
-                    "kind": {"type": "string", "enum": list(KINDS)},
-                    "perspective": {"anyOf": [{"type": "string", "enum": list(SPEAKERS)}, {"type": "null"}]},
-                    "subjects": {"type": "array", "items": {"type": "string"}},
-                    "tags": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["body", "kind", "perspective", "subjects", "tags"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    "required": ["utterances", "memory_candidates"],
-    "additionalProperties": False,
-}
+        "required": ["utterances", "memory_candidates"],
+        "additionalProperties": False,
+    }
 
 
 class InvalidReply(Exception):
@@ -85,7 +88,7 @@ def _str_list(value: Any) -> list[str] | None:
     return [x.strip() for x in value if x.strip()]
 
 
-def _parse_candidate(c: Any) -> tuple[dict[str, Any] | None, str | None]:
+def _parse_candidate(c: Any, speakers: Sequence[str]) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(c, dict):
         return None, "記憶候補がオブジェクトではありません"
     body = c.get("body")
@@ -96,8 +99,8 @@ def _parse_candidate(c: Any) -> tuple[dict[str, Any] | None, str | None]:
         return None, f"記憶候補の種類が不正です: {kind!r}"
     perspective = c.get("perspective")
     if kind == "character_view":
-        if perspective not in SPEAKERS:
-            return None, "受け取り方の候補に視点（ren/aoi）がありません"
+        if perspective not in speakers:
+            return None, f"受け取り方の候補に視点（{'/'.join(speakers)}）がありません"
     elif perspective is not None:
         return None, "視点は受け取り方の候補にだけ付けられます"
     subjects = _str_list(c.get("subjects"))
@@ -113,7 +116,8 @@ def _parse_candidate(c: Any) -> tuple[dict[str, Any] | None, str | None]:
     }, None
 
 
-def parse_reply(raw: str) -> ParsedReply:
+def parse_reply(raw: str, character_ids: Sequence[str]) -> ParsedReply:
+    speakers = tuple(character_ids)
     data = _extract_json(raw)
     if not isinstance(data, dict):
         raise InvalidReply("出力がJSONオブジェクトではありません")
@@ -128,7 +132,7 @@ def parse_reply(raw: str) -> ParsedReply:
         if not isinstance(u, dict) or set(u) - {"speaker", "text"}:
             raise InvalidReply("発話の形式が不正です")
         speaker = u.get("speaker")
-        if speaker not in SPEAKERS:
+        if speaker not in speakers:
             raise InvalidReply(f"不明な話者です: {speaker!r}")
         text = u.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -150,7 +154,7 @@ def parse_reply(raw: str) -> ParsedReply:
         if len(candidates) >= MAX_CANDIDATES:
             warnings.append(f"記憶候補が{MAX_CANDIDATES}件を超えたため残りを捨てました")
             break
-        parsed, warn = _parse_candidate(c)
+        parsed, warn = _parse_candidate(c, speakers)
         if parsed is None:
             warnings.append(f"不正な記憶候補を捨てました: {warn}")
         else:

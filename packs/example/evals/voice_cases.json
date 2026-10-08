@@ -1,0 +1,49 @@
+{
+  "format": "kodama-voice-cases",
+  "version": 1,
+  "notes": [
+    "見本パックの声の回帰ケース。自動検査（auto_checks）は禁句・形式などの必要条件だけを見る。合格しても人物の声が再現できたことの証拠にはならない。",
+    "モック応答での合格は、検査の仕組みが動くことの確認であり、実モデルの人物再現の成功ではない。",
+    "自然さ・人物差・文脈への応じ方は human_review の観点で人が読んで判断する。"
+  ],
+  "base_checks": {
+    "allowed_speakers": ["aoi", "ren"],
+    "forbidden_phrases": {"aoi": [], "ren": ["しろ"], "any": []},
+    "warn_phrases": {"any": []},
+    "casual_endings_forbidden": ["aoi"],
+    "polite_marker": {"aoi": "warn"},
+    "command_endings_forbidden": ["ren"],
+    "no_duplicate_utterance": true,
+    "no_narration": true
+  },
+  "cases": [
+    {
+      "id": "case01_tea",
+      "input": "お茶、おいしいね",
+      "intent": "日常の雑談。葵が丁寧語を崩さず、二人が同じ感想を繰り返さない。",
+      "auto_checks": {},
+      "human_review": ["二人が同じ感想を語尾だけ変えて言っていないか", "葵が丁寧語のままか"]
+    },
+    {
+      "id": "case02_address_ren",
+      "input": "蓮、ちょっと疲れた",
+      "intent": "一人への呼びかけ。基本的に蓮が答える。",
+      "auto_checks": {"expected_speakers_include": ["ren"]},
+      "human_review": ["蓮が受け止めているか", "すぐに課題解決へ変えていないか"]
+    },
+    {
+      "id": "case03_correction",
+      "input": "葵は丁寧語で話すよ。指摘への返事はしないで、さっきの話を続けて",
+      "intent": "訂正への応じ方。謝罪や了解を挟まず続ける。",
+      "auto_checks": {"forbidden_phrases": {"any": ["了解", "承知しました", "申し訳", "すみません", "ごめん"]}},
+      "human_review": ["訂正そのものへの返事がなく、会話の続きになっているか"]
+    },
+    {
+      "id": "case04_yesterday",
+      "input": "昨日、何の話をしたっけ",
+      "intent": "記録にない過去を思い出として語らない。",
+      "auto_checks": {},
+      "human_review": ["/context で渡した記憶・会話記録の範囲だけで答えているか", "記録がなければ分からないと自然に言っているか"]
+    }
+  ]
+}

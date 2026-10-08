@@ -1,4 +1,4 @@
-"""対話CLI。台詞は 蓮「…」/葵「…」、操作案内やエラーは「操作:」で会話と区別する。"""
+"""対話CLI。台詞は 表示名「…」、操作案内やエラーは「操作:」で会話と区別する。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from kodama import migration
 from kodama.config import Config, ConfigError, load_config
-from kodama.context import SPEAKER_LABEL, PersonaMissing
+from kodama.context import PersonaMissing
 from kodama.conversation import ConversationService, PersonaReport, approve_persona, persona_diff, sync_personas
 from kodama.domain import (
     EntityKind,
@@ -23,13 +23,12 @@ from kodama.domain import (
     MemoryVersion,
     NodeType,
     Session,
-    Speaker,
     TurnStatus,
     parse_iso,
 )
 from kodama.model.base import ModelAdapter, redact
 from kodama.model.mock import MockAdapter
-from kodama.personas import PERSONA_KEYS
+from kodama.personas import PackError, PersonaPack, load_pack
 from kodama.recall import REASON_LABELS
 from kodama.storage.base import ImportValidationError, StoreError
 from kodama.storage.sqlite import SQLiteStore
@@ -43,7 +42,7 @@ HELP = """操作: 使えるコマンド
   /session resume <ID先頭>   セッションを再開する
   /memory list [all]         記憶と候補の一覧（all で却下・訂正済み・無効化も）
   /memory show <ID先頭>      記憶の詳細（出典・経緯）
-  /memory add <本文> [--kind user_stated|character_view|imagination] [--perspective ren|aoi]
+  /memory add <本文> [--kind user_stated|character_view|imagination] [--perspective <キャラクターID>]
               [--tags a,b] [--about 名前] [--excerpt <抜粋ID先頭>]
                              記憶を登録（出典は直前のあなたの発言、または --excerpt の抜粋）
   /memory recent [N]         会話から自動で残った記憶を新しい順に（既定10件）
@@ -71,7 +70,6 @@ KIND_SHORT = {
     MemoryKind.IMAGINATION: "想像",
 }
 ORIGIN_LABEL = {MemoryOrigin.USER_EXPLICIT: "本人登録", MemoryOrigin.MODEL_CANDIDATE: "会話から自動"}
-_PERSON_NAMES = {"あなた", "蓮", "葵", "同居人"}
 
 
 class Quit(Exception):
@@ -84,16 +82,19 @@ class App:
         config: Config,
         store,
         adapter: ModelAdapter,
+        pack: PersonaPack,
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
     ):
         self.config = config
+        self.pack = pack
+        self.cast = pack.cast
         self.store = store
         self.adapter = adapter
         self.input = input_fn
         self.out = output_fn
         self.tz = ZoneInfo(config.timezone)
-        self.service = ConversationService(store, adapter, config)
+        self.service = ConversationService(store, adapter, config, pack)
         self.session: Session | None = None
 
     # ------------------------------------------------------------------ output
@@ -102,8 +103,8 @@ class App:
         for i, line in enumerate(redact(text).splitlines() or [""]):
             self.out(("操作: " if i == 0 else "      ") + line)
 
-    def say(self, speaker: Speaker, text: str) -> None:
-        self.out(f"{SPEAKER_LABEL[Speaker(speaker)]}「{text}」")
+    def say(self, speaker: str, text: str) -> None:
+        self.out(f"{self.cast.label(speaker)}「{text}」")
 
     def fmt_time(self, iso: str) -> str:
         return parse_iso(iso).astimezone(self.tz).strftime("%m/%d %H:%M")
@@ -151,9 +152,9 @@ class App:
 
     def _print_message(self, m, status: TurnStatus | None = None) -> None:
         mark = ""
-        if m.speaker == Speaker.USER and status in (TurnStatus.FAILED, TurnStatus.INTERRUPTED):
+        if m.speaker == self.cast.user_id and status in (TurnStatus.FAILED, TurnStatus.INTERRUPTED):
             mark = f"  ［未応答: {'失敗' if status == TurnStatus.FAILED else '中断'}］"
-        self.out(f"[{self.fmt_time(m.created_at)}] {SPEAKER_LABEL[m.speaker]}「{m.text}」{mark}")
+        self.out(f"[{self.fmt_time(m.created_at)}] {self.cast.label(m.speaker)}「{m.text}」{mark}")
 
     # -------------------------------------------------------------------- loop
 
@@ -161,7 +162,7 @@ class App:
         self.start(new_session)
         while True:
             try:
-                line = self.input("あなた> ")
+                line = self.input(f"{self.cast.user.display_name}> ")
             except (EOFError, KeyboardInterrupt):
                 self.out("")
                 self.op("終了します。")
@@ -307,7 +308,7 @@ class App:
         return matches[0]
 
     def _memory_line(self, v: MemoryVersion) -> str:
-        view = f"・{SPEAKER_LABEL[v.perspective]}" if v.perspective else ""
+        view = f"・{self.cast.label(v.perspective)}" if v.perspective else ""
         tags = f"  #{' #'.join(v.tags)}" if v.tags else ""
         src = "" if v.has_source else "  (出典なし)"
         return f"{v.id[:8]} [{STATUS_LABEL[v.status]}・{ORIGIN_LABEL[v.origin]}] {KIND_SHORT[v.kind]}{view}: {v.body}{tags}{src}"
@@ -369,7 +370,7 @@ class App:
                 f"  対象: {', '.join(v.subjects) or '-'}  別名: {', '.join(v.aliases) or '-'}")
         for mid in v.source_message_ids:
             m = self.store.get_message(mid)
-            self.op(f"出典(発言) {mid[:8]}: [{self.fmt_time(m.created_at)}] {SPEAKER_LABEL[m.speaker]}「{m.text}」")
+            self.op(f"出典(発言) {mid[:8]}: [{self.fmt_time(m.created_at)}] {self.cast.label(m.speaker)}「{m.text}」")
         for eid in v.source_excerpt_ids:
             ex = self.store.get_source_excerpt(eid)
             self.op(f"出典(抜粋) {eid[:8]}: {ex.title} / {ex.locator}: {ex.text}")
@@ -384,7 +385,7 @@ class App:
         p = argparse.ArgumentParser(prog="/memory add", add_help=False, exit_on_error=False)
         p.add_argument("body", nargs="+")
         p.add_argument("--kind", default="user_stated", choices=[k.value for k in MemoryKind])
-        p.add_argument("--perspective", choices=["ren", "aoi"])
+        p.add_argument("--perspective", choices=list(self.cast.character_ids))
         p.add_argument("--tags", default="")
         p.add_argument("--about", action="append", default=[])
         p.add_argument("--excerpt")
@@ -402,15 +403,15 @@ class App:
                 return
             ex_ids = (found[0].id,)
         else:
-            mine = [m for m in self.store.list_messages(self.session.id) if m.speaker == Speaker.USER]
+            mine = [m for m in self.store.list_messages(self.session.id) if m.speaker == self.cast.user_id]
             if not mine:
-                self.op("出典になるあなたの発言がありません。先に話すか、--excerpt で抜粋を指定してください。")
+                self.op(f"出典になる{self.cast.user.display_name}の発言がありません。先に話すか、--excerpt で抜粋を指定してください。")
                 return
             msg_ids = (mine[-1].id,)
         draft = MemoryDraft(
             body=" ".join(ns.body),
             kind=MemoryKind(ns.kind),
-            perspective=Speaker(ns.perspective) if ns.perspective else None,
+            perspective=ns.perspective or None,
             tags=tuple(t for t in ns.tags.split(",") if t),
             subjects=tuple(ns.about),
             source_message_ids=msg_ids,
@@ -418,7 +419,8 @@ class App:
         )
         v = self.store.add_memory(draft, MemoryOrigin.USER_EXPLICIT, MemoryStatus.APPROVED)
         for name in ns.about:
-            kind = EntityKind.PERSON if name in _PERSON_NAMES else EntityKind.TOPIC
+            people = {m.display_name for m in (self.cast.user, *self.cast.characters)}
+            kind = EntityKind.PERSON if name in people else EntityKind.TOPIC
             ent = self.store.upsert_entity(kind, name)
             self.store.add_link(NodeType.ENTITY, ent.id, NodeType.MEMORY, v.memory_id, "about")
         self.op(f"登録しました: {self._memory_line(v)}")
@@ -443,7 +445,7 @@ class App:
         plan = self.service.preview(self.session.id, text)
         self.op("次の送信内容（送信はしていません）")
         self.op("送信先: " + ("なし（モック）" if self.adapter.is_mock else f"{self.adapter.provider} / {self.adapter.model}"))
-        self.op("人物設定: " + ", ".join(f"{k}={plan.personas[k].id[:8]}" for k in PERSONA_KEYS))
+        self.op("人物設定: " + ", ".join(f"{k}={plan.personas[k].id[:8]}" for k in self.pack.persona_keys))
         ids = [e.message.id[:8] for e in plan.recent]
         self.op(f"直近の会話: {len(ids)}件 " + (f"{ids[0]} 〜 {ids[-1]}" if ids else ""))
         if plan.dated_log:
@@ -463,13 +465,13 @@ class App:
 
     def cmd_persona(self, rest) -> None:
         sub = rest[0] if rest else "status"
-        keys = [rest[1]] if len(rest) >= 2 else list(PERSONA_KEYS)
-        if any(k not in PERSONA_KEYS for k in keys):
-            self.op(f"人物設定の名前は {', '.join(PERSONA_KEYS)} です。")
+        keys = [rest[1]] if len(rest) >= 2 else list(self.pack.persona_keys)
+        if any(k not in self.pack.persona_keys for k in keys):
+            self.op(f"人物設定の名前は {', '.join(self.pack.persona_keys)} です。")
             return
-        report = sync_personas(self.store, self.config.personas_dir)
+        report = sync_personas(self.store, self.pack)
         if sub == "status":
-            for k in PERSONA_KEYS:
+            for k in self.pack.persona_keys:
                 a = self.store.get_active_persona(k)
                 state = "未承認の変更あり" if k in report.pending else "ファイルと一致"
                 self.op(f"{k}: 有効版 {a.id[:8]}（{self.fmt_time(a.approved_at or a.created_at)}）{state}")
@@ -485,7 +487,7 @@ class App:
             if rest[1] not in report.pending:
                 self.op("その人物設定に未承認の変更はありません。")
                 return
-            v = approve_persona(self.store, self.config.personas_dir, rest[1])
+            v = approve_persona(self.store, self.pack, rest[1])
             self.op(f"{rest[1]} の新しい版 {v.id[:8]} を有効にしました。以前の版も本文ごと残っています。")
         elif sub == "history":
             for k in keys:
@@ -506,7 +508,7 @@ class App:
 
     def cmd_import(self, rest) -> None:
         if len(rest) == 2 and rest[0] == "verify":
-            report = migration.verify_file(rest[1])
+            report = migration.verify_file(rest[1], cast=self.cast)
             if report.ok:
                 self.op(f"検証OK（schema_version {report.schema_version}）: " +
                         ", ".join(f"{k} {n}" for k, n in report.counts.items()))
@@ -515,7 +517,7 @@ class App:
             return
         if len(rest) == 2:
             result = migration.import_file(rest[0], rest[1], active_db_path=self.config.db_path,
-                                           timezone=self.config.timezone)
+                                           timezone=self.config.timezone, cast=self.cast)
             self.op(f"{'新しいDBを作成して' if result.created_new else '既存のDBへ'}取り込みました: {result.target}\n"
                     f"追加: {_counts(result.inserted)}\n同一のため省略: {_counts(result.skipped)}\n"
                     f"使用中のDBは変わっていません。切り替えるには --db {result.target} で起動するか、設定の db_path を変更してください。")
@@ -538,12 +540,12 @@ def make_adapter(config: Config) -> ModelAdapter:
     return MockAdapter()
 
 
-def confirm_real_api(config: Config, input_fn, out) -> str:
+def confirm_real_api(config: Config, pack: PersonaPack, input_fn, out) -> str:
     """実API送信の同意を取る。戻り値: 'claude' / 'mock' / 'quit'。"""
     out("操作: 実API（Anthropic Messages API）への送信が設定されています。")
     out(f"      送信先: Anthropic / モデル {config.model}（effort {config.effort}、出力上限 {config.max_tokens} トークン、"
         f"タイムアウト {config.timeout_seconds:g} 秒、自動再試行なし）")
-    out(f"      送る内容: 人物設定3ファイル（{config.personas_dir}/）、このセッションの直近の会話（最大 {config.max_recent_messages} 件）、"
+    out(f"      送る内容: 人物設定 {len(pack.persona_keys)} ファイル（{pack.root}）、このセッションの直近の会話（最大 {config.max_recent_messages} 件）、"
         f"「昨日」などと言ったときのその日の会話、想起した承認済みの記憶（最大 {config.max_memories} 件）、現在の入力")
     out("      送らないもの: APIキー以外の秘密、未承認の記憶候補、他のファイル。/context で送信前に中身を確認できます。")
     out("      API利用は課金の対象になり得ます。料金や契約による扱いはこのアプリでは判断しません。")
@@ -558,11 +560,12 @@ def confirm_real_api(config: Config, input_fn, out) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="kodama", description="蓮と葵と話すローカル会話CLI")
+    p = argparse.ArgumentParser(prog="kodama", description="記憶を保ちながらキャラクターと話すローカル会話CLI")
     p.add_argument("--config", help="設定ファイル（TOML）。省略時は ./kodama.toml があれば使う")
     p.add_argument("--db", help="使うDBファイル（設定の db_path を上書き）")
     p.add_argument("--provider", choices=["mock", "claude"], help="設定の provider を上書き")
     p.add_argument("--model", help="設定の model（モデルID）を上書き")
+    p.add_argument("--pack", help="人物設定パックのディレクトリ（設定の persona_pack を上書き）")
     p.add_argument("--new-session", action="store_true", help="新しいセッションで始める")
     return p
 
@@ -572,22 +575,32 @@ def main(argv: list[str] | None = None, input_fn=input, output_fn=print,
     args = build_parser().parse_args(argv)
     config_path = args.config or ("kodama.toml" if Path("kodama.toml").exists() else None)
     try:
-        config = load_config(config_path, {"db_path": args.db, "provider": args.provider, "model": args.model})
+        overrides = {"db_path": args.db, "provider": args.provider, "model": args.model, "persona_pack": args.pack}
+        config = load_config(config_path, overrides)
     except ConfigError as e:
         output_fn(f"操作: 設定エラー: {redact(str(e))}")
         return 2
+    try:
+        pack = load_pack(config.persona_pack)
+    except PackError as e:
+        output_fn(f"操作: 人物設定パックのエラー: {e}")
+        return 2
     if config.provider == "claude":
-        choice = confirm_real_api(config, input_fn, output_fn)
+        choice = confirm_real_api(config, pack, input_fn, output_fn)
         if choice == "quit":
             output_fn("操作: 終了します。")
             return 0
         if choice == "mock":
-            config = load_config(config_path, {"db_path": args.db, "provider": "mock", "model": args.model})
+            config = load_config(config_path, {**overrides, "provider": "mock"})
     Path(config.db_path).parent.mkdir(parents=True, exist_ok=True)
-    store = SQLiteStore(config.db_path, timezone=config.timezone)
+    try:
+        store = SQLiteStore(config.db_path, cast=pack.cast, timezone=config.timezone)
+    except StoreError as e:
+        output_fn(f"操作: DBを開けません: {e}")
+        return 2
     try:
         adapter = (adapter_factory or make_adapter)(config)
-        app = App(config, store, adapter, input_fn, output_fn)
+        app = App(config, store, adapter, pack, input_fn, output_fn)
         return app.run(new_session=args.new_session)
     finally:
         store.close()

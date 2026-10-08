@@ -10,13 +10,13 @@ from kodama import migration
 from kodama.domain import MemoryStatus, PersonaStatus
 from kodama.storage.base import ImportConflict, ImportValidationError
 from kodama.storage.sqlite import SQLiteStore
-from seed import REN_V1, REN_V2, seed_store
+from seed import CAST, REN_V1, REN_V2, seed_store
 
 
 @pytest.fixture
 def exported(tmp_path):
     src_path = tmp_path / "src.db"
-    src = SQLiteStore(src_path)
+    src = SQLiteStore(cast=CAST, path=src_path)
     ids = seed_store(src)
     export = tmp_path / "export.json"
     migration.export_to_file(src, export, settings={"api_key": "sk-ant-secret", "effort": "low"})
@@ -32,7 +32,7 @@ def _semantic(store) -> dict:
 def _rewrite(path, mutate):
     doc = json.loads(path.read_text(encoding="utf-8"))
     mutate(doc)
-    doc["counts"] = {s: len(doc["data"][s]) for s in doc["data"]}
+    doc["counts"] = {s: len(doc["data"][s]) for s in doc["data"] if s != "cast"}
     doc["checksum"] = migration.checksum(doc["data"])
     path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
@@ -42,7 +42,7 @@ def test_roundtrip_preserves_meaning(exported, tmp_path):
     target = tmp_path / "new.db"
     result = migration.import_file(export, target, active_db_path=src_path)
     assert result.created_new
-    dst = SQLiteStore(target)
+    dst = SQLiteStore(cast=CAST, path=target)
     try:
         before, after = _semantic(src), _semantic(dst)
         settings_before = before.pop("settings")
@@ -52,7 +52,7 @@ def test_roundtrip_preserves_meaning(exported, tmp_path):
             **{r["key"]: r["value"] for r in settings_before},
             "effort": "low",
         }
-        assert [(m.speaker.value, m.text) for m in dst.list_messages(ids.session1)] == list(ids.transcript)
+        assert [(m.speaker, m.text) for m in dst.list_messages(ids.session1)] == list(ids.transcript)
         assert dst.get_active_persona("ren").body == REN_V2
         assert dst.get_persona_version(ids.persona_ren_v1).body == REN_V1
         assert dst.get_persona_version(ids.persona_ren_v1).status == PersonaStatus.RETIRED
@@ -69,7 +69,7 @@ def test_export_contains_no_secrets(exported):
     assert "sk-ant" not in text
     assert "api_key" not in text
     doc = json.loads(text)
-    assert doc["schema_version"] == 1 and doc["format"] == "kodama-export"
+    assert doc["schema_version"] == migration.SCHEMA_VERSION and doc["format"] == "kodama-export"
     assert migration.verify_file(export).ok
 
 
@@ -77,13 +77,13 @@ def test_reimport_is_idempotent(exported, tmp_path):
     _, _, export, src_path = exported
     target = tmp_path / "new.db"
     migration.import_file(export, target, active_db_path=src_path)
-    store = SQLiteStore(target)
+    store = SQLiteStore(cast=CAST, path=target)
     before = store.export_snapshot()
     store.close()
     again = migration.import_file(export, target, active_db_path=src_path)
     assert not again.created_new
     assert sum(again.inserted.values()) == 0
-    store = SQLiteStore(target)
+    store = SQLiteStore(cast=CAST, path=target)
     assert store.export_snapshot() == before
     store.close()
 
@@ -92,7 +92,7 @@ def test_same_id_different_content_conflicts(exported, tmp_path):
     _, ids, export, src_path = exported
     target = tmp_path / "new.db"
     migration.import_file(export, target, active_db_path=src_path)
-    store = SQLiteStore(target)
+    store = SQLiteStore(cast=CAST, path=target)
     before = store.export_snapshot()
     store.close()
 
@@ -107,7 +107,7 @@ def test_same_id_different_content_conflicts(exported, tmp_path):
     _rewrite(changed, mutate)
     with pytest.raises(ImportConflict):
         migration.import_file(changed, target, active_db_path=src_path)
-    store = SQLiteStore(target)
+    store = SQLiteStore(cast=CAST, path=target)
     assert store.export_snapshot() == before
     store.close()
 
@@ -223,7 +223,7 @@ def _strip_cache_keys(doc):
 
 def test_export_contains_cache_usage(exported):
     doc = json.loads(exported[2].read_text(encoding="utf-8"))
-    assert doc["schema_version"] == 1
+    assert doc["schema_version"] == migration.SCHEMA_VERSION
     assert any(t["cache_read_tokens"] == 900 and t["cache_write_tokens"] == 30 for t in doc["data"]["turns"])
     assert migration.verify_file(exported[2]).ok
 
@@ -236,7 +236,7 @@ def test_old_export_without_cache_keys_is_accepted(exported, tmp_path):
     assert migration.verify_file(old).ok
     target = tmp_path / "new.db"
     migration.import_file(old, target, active_db_path=src_path)
-    store = SQLiteStore(target)
+    store = SQLiteStore(cast=CAST, path=target)
     turns = [t for s in store.list_sessions() for t in store.list_turns(s.id)]
     assert turns and all(t.cache_read_tokens is None and t.cache_write_tokens is None for t in turns)
     store.close()

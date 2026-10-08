@@ -1,7 +1,7 @@
 [project]
 name = "kodama"
 version = "1.0.0"
-description = "蓮と葵と話すローカル会話CLI（記憶つき）"
+description = "記憶を保ちながらキャラクターと話すローカル会話CLI"
 requires-python = ">=3.11"
 dependencies = []
 

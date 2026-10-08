@@ -27,7 +27,7 @@ class Config:
     effort: str = "low"
     api_key_env: str = "ANTHROPIC_API_KEY"
     db_path: str = "data/kodama.db"
-    personas_dir: str = "personas"
+    persona_pack: str = "packs/example"  # 人物設定パック（pack.toml のあるディレクトリ）
     timezone: str = "Asia/Tokyo"
     max_tokens: int = 2000
     timeout_seconds: float = 60.0
@@ -88,6 +88,10 @@ def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None
             except tomllib.TOMLDecodeError as e:
                 raise ConfigError(f"設定ファイルを読めません: {e}") from None
     _check_no_secrets(values)
+    if "personas_dir" in values:
+        raise ConfigError(
+            "設定項目 personas_dir は persona_pack に変わりました。人物設定パック（pack.toml のあるディレクトリ）を指定してください。"
+        )
     known = {f.name for f in dataclasses.fields(Config)}
     unknown = sorted(set(values) - known)
     if unknown:

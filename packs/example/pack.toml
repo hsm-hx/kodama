@@ -1,0 +1,25 @@
+# kodama 人物設定パックの見本（架空の二人）
+pack_format = 1
+name = "見本: 葵と蓮"
+
+[user]
+id = "user"
+display_name = "あなた"
+
+[[characters]]
+id = "ren"
+display_name = "蓮"
+persona_file = "ren.md"
+address_aliases = ["れん"]
+
+[[characters]]
+id = "aoi"
+display_name = "葵"
+persona_file = "aoi.md"
+address_aliases = ["あおい"]
+
+[common]
+persona_file = "common.md"
+
+[evals]
+voice_cases = "evals/voice_cases.json"

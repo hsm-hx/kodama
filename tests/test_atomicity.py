@@ -7,7 +7,7 @@ import pytest
 from kodama import migration
 from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, NodeType, TurnStatus
 from kodama.storage.sqlite import SQLiteStore
-from seed import seed_store
+from seed import CAST, seed_store
 
 
 class Boom(Exception):
@@ -27,7 +27,7 @@ class Fault:
 @pytest.fixture
 def faulty(tmp_path):
     fault = Fault()
-    store = SQLiteStore(tmp_path / "f.db", fault_hook=fault)
+    store = SQLiteStore(cast=CAST, path=tmp_path / "f.db", fault_hook=fault)
     yield store, fault
     store.close()
 
@@ -78,13 +78,13 @@ def test_revise_memory_is_atomic_and_retry_safe(faulty, point):
 
 @pytest.mark.parametrize("point", ["import_snapshot.after_messages", "import_snapshot.after_links"])
 def test_import_snapshot_is_atomic_and_retry_safe(tmp_path, point):
-    src = SQLiteStore(tmp_path / "src.db")
+    src = SQLiteStore(cast=CAST, path=tmp_path / "src.db")
     seed_store(src)
     data = src.export_snapshot()
     src.close()
 
     fault = Fault()
-    target = SQLiteStore(tmp_path / "dst.db", fault_hook=fault)
+    target = SQLiteStore(cast=CAST, path=tmp_path / "dst.db", fault_hook=fault)
     fault.point = point
     with pytest.raises(Boom):
         target.import_snapshot(data)
@@ -100,12 +100,12 @@ def test_import_snapshot_is_atomic_and_retry_safe(tmp_path, point):
 
 def test_recover_marks_pending_as_interrupted_without_resend(tmp_path):
     path = tmp_path / "r.db"
-    store = SQLiteStore(path)
+    store = SQLiteStore(cast=CAST, path=path)
     session = store.create_session("s")
     turn, _ = store.begin_turn(session.id, "送信中に落ちる", "mock", "m")
     store.close()  # simulated crash while the API call was in flight
 
-    reopened = SQLiteStore(path)
+    reopened = SQLiteStore(cast=CAST, path=path)
     recovered = reopened.recover_incomplete_turns()
     assert [t.id for t in recovered] == [turn.id]
     assert recovered[0].status == TurnStatus.INTERRUPTED
@@ -123,7 +123,7 @@ def test_keyboard_interrupt_rolls_back(tmp_path):
         if point == "complete_turn.after_messages":
             raise KeyboardInterrupt
 
-    store = SQLiteStore(tmp_path / "k.db", fault_hook=hook)
+    store = SQLiteStore(cast=CAST, path=tmp_path / "k.db", fault_hook=hook)
     session = store.create_session("s")
     turn, _ = store.begin_turn(session.id, "やあ", "mock", "m")
     with pytest.raises(KeyboardInterrupt):
@@ -136,7 +136,7 @@ def test_keyboard_interrupt_rolls_back(tmp_path):
 
 
 def test_import_file_failure_leaves_no_target(tmp_path, monkeypatch):
-    src = SQLiteStore(tmp_path / "src.db")
+    src = SQLiteStore(cast=CAST, path=tmp_path / "src.db")
     seed_store(src)
     export = tmp_path / "e.json"
     migration.export_to_file(src, export)

@@ -10,7 +10,7 @@ effort = "low"               # low / medium / high / xhigh / max
 api_key_env = "ANTHROPIC_API_KEY"  # キーを読む環境変数の「名前」
 
 db_path = "data/kodama.db"   # 会話と記憶の保存先（ローカルの SQLite。暗号化はされません）
-personas_dir = "personas"
+persona_pack = "packs/example"   # 人物設定パック（pack.toml のあるディレクトリ）。自分のパックはリポジトリの外に置くのがおすすめ
 timezone = "Asia/Tokyo"      # 日時の表示と生成に使う地域
 
 max_tokens = 2000            # 1回の返答の出力上限

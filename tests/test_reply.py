@@ -2,7 +2,18 @@ import json
 
 import pytest
 
-from kodama.reply import REPLY_SCHEMA, InvalidReply, parse_reply
+from kodama.reply import InvalidReply, reply_schema
+from kodama.reply import parse_reply as _parse_reply
+from seed import CAST, PACK
+
+IDS = CAST.character_ids
+REPLY_SCHEMA = reply_schema(IDS)
+CHARACTERS = [{"id": c.id, "display_name": c.display_name, "aliases": list(c.address_aliases)} for c in PACK.characters]
+
+
+def parse_reply(raw):
+    return _parse_reply(raw, IDS)
+
 
 
 def _raw(utts, cands=None):

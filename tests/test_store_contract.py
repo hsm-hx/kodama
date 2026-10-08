@@ -12,19 +12,18 @@ from kodama.domain import (
     MemoryStatus,
     NodeType,
     PersonaStatus,
-    Speaker,
     TurnStatus,
     parse_iso,
 )
 from kodama.storage.base import InvalidState, NotFound
-from seed import COMMON_V1, REN_V1, REN_V2, SETTINGS, AOI_V1
+from seed import CAST, COMMON_V1, REN_V1, REN_V2, SETTINGS, AOI_V1
 
 
 def test_sessions_and_transcript_order(store, seed):
     titles = [s.title for s in store.list_sessions()]
     assert titles == ["初日", "翌日"]
     msgs = store.list_messages(seed.session1)
-    assert [(m.speaker.value, m.text) for m in msgs] == list(seed.transcript)
+    assert [(m.speaker, m.text) for m in msgs] == list(seed.transcript)
     assert [m.seq for m in msgs] == list(range(len(msgs)))
     assert store.list_messages(seed.session2) == []
 
@@ -81,7 +80,7 @@ def test_memory_states(store, seed):
     get = store.get_memory_version
     assert get(seed.mem_coffee).status == MemoryStatus.APPROVED
     assert get(seed.mem_clothes_view).status == MemoryStatus.APPROVED
-    assert get(seed.mem_clothes_view).perspective == Speaker.AOI
+    assert get(seed.mem_clothes_view).perspective == "aoi"
     assert get(seed.mem_clothes_view).origin == MemoryOrigin.MODEL_CANDIDATE
     assert get(seed.mem_imagination_rejected).status == MemoryStatus.REJECTED
     assert get(seed.mem_imagination_rejected).status_reason == "想像は残さない"
@@ -127,7 +126,7 @@ def test_memory_validation(store, seed):
         store.add_memory(MemoryDraft(body="視点なし", kind=MemoryKind.CHARACTER_VIEW), MemoryOrigin.USER_EXPLICIT)
     with pytest.raises(ValueError):
         store.add_memory(
-            MemoryDraft(body="本人発言に視点", kind=MemoryKind.USER_STATED, perspective=Speaker.REN),
+            MemoryDraft(body="本人発言に視点", kind=MemoryKind.USER_STATED, perspective="ren"),
             MemoryOrigin.USER_EXPLICIT,
         )
     with pytest.raises(NotFound):
@@ -204,7 +203,7 @@ def test_old_schema_db_is_migrated_in_place(tmp_path):
     from kodama.storage.sqlite import SQLiteStore
 
     path = tmp_path / "old.db"
-    s = SQLiteStore(path)
+    s = SQLiteStore(cast=CAST, path=path)
     sess = s.create_session("旧")
     t, _ = s.begin_turn(sess.id, "こんにちは", "mock", "m")
     s.complete_turn(t.id, [("ren", "うん。")], Usage(11, 3))
@@ -219,7 +218,7 @@ def test_old_schema_db_is_migrated_in_place(tmp_path):
     assert "cache_read_tokens" not in cols
     raw.close()
 
-    s2 = SQLiteStore(path)
+    s2 = SQLiteStore(cast=CAST, path=path)
     turns = s2.list_turns(sess.id)
     assert len(turns) == 1 and (turns[0].usage_input_tokens, turns[0].cache_read_tokens) == (11, None)
     assert [m.text for m in s2.list_messages(sess.id)] == ["こんにちは", "うん。"]
@@ -227,5 +226,5 @@ def test_old_schema_db_is_migrated_in_place(tmp_path):
     s2.complete_turn(t2.id, [("ren", "はい。")], Usage(1, 1, 50, 5))
     assert s2.get_turn(t2.id).cache_write_tokens == 5
     s2.close()
-    s3 = SQLiteStore(path)  # 再オープンしても問題なし
+    s3 = SQLiteStore(cast=CAST, path=path)  # 再オープンしても問題なし
     s3.close()

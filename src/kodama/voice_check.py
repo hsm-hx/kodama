@@ -2,6 +2,12 @@
 
 ここで見るのは禁句・文末・形式などの機械的に判定できる条件だけ。合格しても
 人物の声が再現できたことの証拠にはならない。自然さ・人物差は evals/README.md の手順で人が判断する。
+
+検査の対象は人物設定パックの voice_cases.json で、話者ごとの規則は base_checks に話者IDで書く:
+  "allowed_speakers": [...], "forbidden_phrases": {"<id>": [...], "any": [...]},
+  "casual_endings_forbidden": ["<id>"],   # 常体の文末を使わない（敬語を保つ）話者
+  "polite_marker": {"<id>": "warn"},      # 敬語の目印がない台詞を警告/失敗にする話者
+  "command_endings_forbidden": ["<id>"],  # 命令形の文末を使わない話者
 """
 
 from __future__ import annotations
@@ -13,10 +19,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CASES_PATH = Path(__file__).resolve().parents[2] / "evals" / "voice_cases.json"
-
-# 葵が使わない、くだけた常体の文末（句単位で末尾一致させる）
-AOI_CASUAL_ENDINGS: tuple[str, ...] = (
+# 敬語を保つ話者が使わない、くだけた常体の文末（句単位で末尾一致させる）
+CASUAL_ENDINGS: tuple[str, ...] = (
     "だよ",
     "だよね",
     "だね",
@@ -30,11 +34,11 @@ AOI_CASUAL_ENDINGS: tuple[str, ...] = (
 # 常体の意志形（休もう・行こう等）。「しょう」の「ょ」は小書きなので一致しない
 _VOLITIONAL = re.compile(r"[こごそぞとどのほぼぽもよろ]う$")
 # 句全体が一致したら常体とみなす相づち
-AOI_CASUAL_CLAUSES: tuple[str, ...] = ("うん", "そうだね", "だよね")
+CASUAL_CLAUSES: tuple[str, ...] = ("うん", "そうだね", "だよね")
 # 敬語の目印（短い台詞でもどれか一つは含むはず）
 POLITE_MARKERS: tuple[str, ...] = ("です", "ます", "ません", "ましょう", "でした", "ください", "ございます")
-# 蓮が使わない命令形の文末
-REN_COMMAND_ENDINGS: tuple[str, ...] = ("しろ", "やれ", "来い", "寝ろ", "休め", "食え")
+# 命令形の文末
+COMMAND_ENDINGS: tuple[str, ...] = ("しろ", "やれ", "来い", "寝ろ", "休め", "食え")
 
 _CLAUSE_SPLIT = re.compile(r"[。！？!?\n、，,]+")
 _TRAILING = "…‥・ー〜~ 　「」『』（）()♪.．"
@@ -78,23 +82,23 @@ def clauses(text: str) -> list[str]:
     return out
 
 
-def aoi_casual_hits(text: str) -> list[str]:
+def casual_hits(text: str) -> list[str]:
     hits = []
     for c in clauses(text):
-        if c in AOI_CASUAL_CLAUSES or c.endswith(AOI_CASUAL_ENDINGS) or _VOLITIONAL.search(c):
+        if c in CASUAL_CLAUSES or c.endswith(CASUAL_ENDINGS) or _VOLITIONAL.search(c):
             hits.append(c)
     return hits
 
 
-def ren_command_hits(text: str) -> list[str]:
-    return [c for c in clauses(text) if c.endswith(REN_COMMAND_ENDINGS)]
+def command_hits(text: str) -> list[str]:
+    return [c for c in clauses(text) if c.endswith(COMMAND_ENDINGS)]
 
 
 def has_polite_marker(text: str) -> bool:
     return any(m in text for m in POLITE_MARKERS)
 
 
-def load_cases(path: str | Path = DEFAULT_CASES_PATH) -> dict[str, Any]:
+def load_cases(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
@@ -123,11 +127,14 @@ def check_utterances(
     report = VoiceCheckReport(case_id=case.get("id", "?"))
     add = report.results.append
 
-    allowed = cfg.get("allowed_speakers") or ["ren", "aoi"]
+    allowed = cfg.get("allowed_speakers")
+    casual_forbidden = set(cfg.get("casual_endings_forbidden") or [])
+    polite = cfg.get("polite_marker") or {}
+    command_forbidden = set(cfg.get("command_endings_forbidden") or [])
     if not utterances:
         add(CheckResult("has_utterance", False, "fail", detail="発話がありません"))
     for speaker, text in utterances:
-        if speaker not in allowed:
+        if allowed and speaker not in allowed:
             add(CheckResult("allowed_speakers", False, "fail", speaker, f"不明な話者: {speaker}"))
             continue
         for phrase in forbidden.get(speaker, []) + forbidden.get("any", []):
@@ -136,15 +143,14 @@ def check_utterances(
         for phrase in warn.get(speaker, []) + warn.get("any", []):
             if phrase in text:
                 add(CheckResult("warn_phrase", False, "warn", speaker, phrase))
-        if speaker == "aoi" and cfg.get("aoi_casual_endings"):
-            for hit in aoi_casual_hits(text):
-                add(CheckResult("aoi_casual_ending", False, "fail", speaker, hit))
-        if speaker == "aoi" and cfg.get("aoi_polite_marker") in ("warn", "fail"):
-            if not has_polite_marker(text):
-                add(CheckResult("aoi_polite_marker", False, cfg["aoi_polite_marker"], speaker, text))
-        if speaker == "ren" and cfg.get("ren_command_endings"):
-            for hit in ren_command_hits(text):
-                add(CheckResult("ren_command_ending", False, "fail", speaker, hit))
+        if speaker in casual_forbidden:
+            for hit in casual_hits(text):
+                add(CheckResult("casual_ending", False, "fail", speaker, hit))
+        if polite.get(speaker) in ("warn", "fail") and not has_polite_marker(text):
+            add(CheckResult("polite_marker", False, polite[speaker], speaker, text))
+        if speaker in command_forbidden:
+            for hit in command_hits(text):
+                add(CheckResult("command_ending", False, "fail", speaker, hit))
         if cfg.get("no_narration") and _NARRATION.search(text):
             add(CheckResult("no_narration", False, "fail", speaker, "括弧書きの地の文・ト書きがあります"))
         max_chars = cfg.get("max_chars")

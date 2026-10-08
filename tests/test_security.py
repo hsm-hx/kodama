@@ -12,7 +12,7 @@ from kodama.config import ConfigError, load_config
 from kodama.model.claude import ClaudeAdapter
 
 SECRET = "sk-ant-api03-DUMMY-NOT-A-REAL-KEY-0123456789"
-REPO_PERSONAS = Path(__file__).resolve().parent.parent / "personas"
+REPO_PERSONAS = Path(__file__).resolve().parent.parent / "packs" / "example"
 
 
 class FakeTimeout(Exception):
@@ -56,7 +56,7 @@ def env(tmp_path, monkeypatch):
     personas = tmp_path / "personas"
     shutil.copytree(REPO_PERSONAS, personas)
     cfg = tmp_path / "kodama.toml"
-    cfg.write_text(f'provider = "claude"\npersonas_dir = "{personas}"\n', encoding="utf-8")
+    cfg.write_text(f'provider = "claude"\npersona_pack = "{personas}"\n', encoding="utf-8")
     return tmp_path, cfg
 
 
@@ -94,7 +94,7 @@ def test_missing_key_is_config_error_and_mock_still_works(tmp_path, monkeypatch)
     personas = tmp_path / "personas"
     shutil.copytree(REPO_PERSONAS, personas)
     cfg = tmp_path / "kodama.toml"
-    cfg.write_text(f'provider = "claude"\npersonas_dir = "{personas}"\n', encoding="utf-8")
+    cfg.write_text(f'provider = "claude"\npersona_pack = "{personas}"\n', encoding="utf-8")
     out: list[str] = []
     lines = iter(["y", "こんばんは", "/quit"])
     code = cli.main(["--config", str(cfg), "--db", str(tmp_path / "k.db")], lambda p: next(lines), out.append,

@@ -13,6 +13,7 @@ from typing import Any
 
 from kodama import __version__
 from kodama.domain import (
+    Cast,
     Entity,
     Link,
     MemoryStatus,
@@ -28,12 +29,14 @@ from kodama.domain import (
     parse_iso,
     validate_memory_fields,
 )
-from kodama.storage.base import SNAPSHOT_SECTIONS, ImportValidationError, StoreError
+from kodama.storage.base import SNAPSHOT_SECTIONS, ImportValidationError, InvalidState, StoreError
 from kodama.storage.sqlite import SQLiteStore
 
 FORMAT = "kodama-export"
-SCHEMA_VERSION = 1
-SUPPORTED_SCHEMA_VERSIONS = (1,)
+# 1: 初版（参加者 cast を持たない。取り込み時は取り込み先の人物設定パックの cast で検証する）
+# 2: data.cast（ユーザーとキャラクターの id / display_name）を追加
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
 
 # Only these (non-secret) settings are exported.
 SETTINGS_ALLOWLIST = frozenset(
@@ -91,6 +94,7 @@ class VerifyReport:
     errors: list[str]
     schema_version: Any = None
     counts: dict[str, int] = dataclasses.field(default_factory=dict)
+    cast: Cast | None = None  # ファイルの cast（v1 は取り込み先パックの cast）
 
 
 @dataclasses.dataclass
@@ -120,10 +124,14 @@ def checksum(data: dict[str, Any]) -> str:
 
 
 def build_export(store, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    cast = store.get_cast()
+    if cast is None:
+        raise StoreError("このDBには参加者（cast）が記録されていません。人物設定パックを指定して開いてから書き出してください。")
     data = store.export_snapshot()
     merged = filter_settings({row["key"]: row["value"] for row in data["settings"]})
     merged.update(filter_settings(settings or {}))
     data["settings"] = [{"key": k, "value": merged[k]} for k in sorted(merged)]
+    data["cast"] = cast.to_dict()
     return {
         "format": FORMAT,
         "schema_version": SCHEMA_VERSION,
@@ -154,7 +162,13 @@ def export_to_file(store, path: str | Path, settings: dict[str, Any] | None = No
 # ------------------------------------------------------------------ verification
 
 
-def verify_document(doc: Any) -> VerifyReport:
+def _snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    return {s: data[s] for s in SNAPSHOT_SECTIONS}
+
+
+def verify_document(doc: Any, cast: Cast | None = None) -> VerifyReport:
+    """`cast` は取り込み先（人物設定パック）の cast。v2 ファイルの cast と話者IDが一致しなければエラー。
+    v1 ファイル（cast なし）はこの cast でファイル内の話者を検証する。"""
     errors: list[str] = []
     if not isinstance(doc, dict):
         return VerifyReport(False, ["top level is not an object"])
@@ -170,11 +184,23 @@ def verify_document(doc: Any) -> VerifyReport:
     for section in SNAPSHOT_SECTIONS:
         if not isinstance(data.get(section), list):
             errors.append(f"section {section} missing or not a list")
-    extra = set(data) - set(SNAPSHOT_SECTIONS)
+    allowed = set(SNAPSHOT_SECTIONS) | ({"cast"} if version >= 2 else set())
+    extra = set(data) - allowed
     if extra:
         errors.append(f"unknown sections: {sorted(extra)}")
+    file_cast: Cast | None = None
+    if version >= 2:
+        try:
+            file_cast = Cast.from_dict(data.get("cast"))
+        except (ValueError, TypeError) as exc:
+            errors.append(f"cast: {exc}")
+    if file_cast is not None and cast is not None and not file_cast.same_ids(cast):
+        errors.append(
+            f"cast mismatch: file {list(file_cast.speaker_ids)} vs persona pack {list(cast.speaker_ids)}"
+        )
     if errors:
         return VerifyReport(False, errors, version)
+    effective = file_cast or cast
 
     if doc.get("checksum") != checksum(data):
         errors.append("checksum mismatch (file is corrupted or edited)")
@@ -182,23 +208,23 @@ def verify_document(doc: Any) -> VerifyReport:
     if doc.get("counts") != counts:
         errors.append(f"counts mismatch: header {doc.get('counts')} vs data {counts}")
 
-    records = _parse_records(data, errors)
+    records = _parse_records(data, errors, effective)
     if records is not None:
-        _check_integrity(records, data["settings"], errors)
+        _check_integrity(records, data["settings"], errors, effective)
 
     if not errors:
         # Trial import into a throwaway in-memory store to catch DB-level constraints.
-        trial = SQLiteStore(":memory:")
+        trial = SQLiteStore(":memory:", cast=effective)
         try:
-            trial.import_snapshot(data)
+            trial.import_snapshot(_snapshot(data))
         except StoreError as exc:
             errors.append(f"trial import failed: {exc}")
         finally:
             trial.close()
-    return VerifyReport(not errors, errors, version, counts)
+    return VerifyReport(not errors, errors, version, counts, effective)
 
 
-def _parse_records(data: dict[str, Any], errors: list[str]) -> dict[str, list[Any]] | None:
+def _parse_records(data: dict[str, Any], errors: list[str], cast: Cast | None) -> dict[str, list[Any]] | None:
     records: dict[str, list[Any]] = {}
     start = len(errors)
     for section, cls in _RECORD_TYPES.items():
@@ -227,6 +253,11 @@ def _parse_records(data: dict[str, Any], errors: list[str]) -> dict[str, list[An
                 value = getattr(rec, field)
                 if not isinstance(value, str) or not value.strip():
                     errors.append(f"{where}.{field}: required text is empty")
+            if cast is not None:
+                if section == "messages" and rec.speaker not in cast.speaker_ids:
+                    errors.append(f"{where}.speaker: {rec.speaker!r} is not in the cast")
+                if section == "persona_versions" and rec.persona_key not in cast.persona_keys:
+                    errors.append(f"{where}.persona_key: {rec.persona_key!r} is not in the cast")
             records[section].append(rec)
     for i, raw in enumerate(data["settings"]):
         if not isinstance(raw, dict) or set(raw) != {"key", "value"} or not isinstance(raw.get("key"), str):
@@ -236,7 +267,9 @@ def _parse_records(data: dict[str, Any], errors: list[str]) -> dict[str, list[An
     return records if len(errors) == start else None
 
 
-def _check_integrity(r: dict[str, list[Any]], settings: list[dict], errors: list[str]) -> None:
+def _check_integrity(
+    r: dict[str, list[Any]], settings: list[dict], errors: list[str], cast: Cast | None
+) -> None:
     for section, recs in r.items():
         dupes = [k for k, n in Counter(x.id for x in recs).items() if n > 1]
         if dupes:
@@ -291,7 +324,9 @@ def _check_integrity(r: dict[str, list[Any]], settings: list[dict], errors: list
     approved_per_memory: Counter = Counter()
     for v in versions.values():
         try:
-            validate_memory_fields(v.body, v.kind, v.perspective, v.occurred_at)
+            validate_memory_fields(
+                v.body, v.kind, v.perspective, v.occurred_at, cast.character_ids if cast else None
+            )
         except ValueError as exc:
             errors.append(f"memory version {v.id}: {exc}")
         for mid in v.source_message_ids:
@@ -345,11 +380,11 @@ def load_document(path: str | Path) -> tuple[Any, list[str]]:
         return None, [f"file is not valid JSON: {exc}"]
 
 
-def verify_file(path: str | Path) -> VerifyReport:
+def verify_file(path: str | Path, cast: Cast | None = None) -> VerifyReport:
     doc, errors = load_document(path)
     if errors:
         return VerifyReport(False, errors)
-    return verify_document(doc)
+    return verify_document(doc, cast)
 
 
 # ------------------------------------------------------------------------ import
@@ -376,6 +411,7 @@ def import_file(
     target_db_path: str | Path,
     active_db_path: str | Path | None = None,
     timezone: str | None = None,
+    cast: Cast | None = None,
 ) -> ImportResult:
     """Validate `path` and import it into `target_db_path` (never the active DB).
 
@@ -389,14 +425,23 @@ def import_file(
     doc, load_errors = load_document(path)
     if load_errors:
         raise ImportValidationError(load_errors)
-    report = verify_document(doc)
+    report = verify_document(doc, cast)
     if not report.ok:
         raise ImportValidationError(report.errors)
-    data = doc["data"]
-    kwargs = {"timezone": timezone} if timezone else {}
+    if report.cast is None:
+        raise ImportValidationError(
+            ["schema_version 1 のファイルには参加者（cast）がありません。取り込み先の人物設定パックを指定してください"]
+        )
+    data = _snapshot(doc["data"])
+    kwargs: dict[str, Any] = {"cast": report.cast}
+    if timezone:
+        kwargs["timezone"] = timezone
 
     if target.exists():
-        store = SQLiteStore(target, **kwargs)
+        try:
+            store = SQLiteStore(target, **kwargs)
+        except InvalidState as exc:
+            raise ImportValidationError([str(exc)]) from exc
         try:
             stats = store.import_snapshot(data)
         finally:
@@ -409,7 +454,7 @@ def import_file(
         store = SQLiteStore(tmp, **kwargs)
         try:
             stats = store.import_snapshot(data)
-            if store.export_snapshot() != _normalised(data):
+            if store.export_snapshot() != _normalised(data, report.cast):
                 raise ImportValidationError(["imported database does not match the export file"])
             store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
@@ -420,9 +465,9 @@ def import_file(
     return ImportResult(str(target), True, stats.inserted, stats.skipped)
 
 
-def _normalised(data: dict[str, Any]) -> dict[str, Any]:
+def _normalised(data: dict[str, Any], cast: Cast) -> dict[str, Any]:
     """Round-trip the input through a scratch store so ordering matches export_snapshot."""
-    scratch = SQLiteStore(":memory:")
+    scratch = SQLiteStore(":memory:", cast=cast)
     try:
         scratch.import_snapshot(data)
         return scratch.export_snapshot()

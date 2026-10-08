@@ -6,23 +6,35 @@
 
 import pytest
 
-from kodama.voice_check import check_utterances, load_cases, aoi_casual_hits
+from kodama.voice_check import casual_hits, check_utterances, load_cases
+from seed import PACK
 
-DATA = load_cases()
-BASE = DATA["base_checks"]
-CASES = {c["id"]: c for c in DATA["cases"]}
+# 検査関数の試験用の規則（話者IDで書く）。ren は命令形を使わない、aoi は常に丁寧語。
+BASE = {
+    "allowed_speakers": ["ren", "aoi"],
+    "forbidden_phrases": {"ren": ["俺", "よく作ったな"], "any": []},
+    "warn_phrases": {"ren": ["あおちゃん"]},
+    "casual_endings_forbidden": ["aoi"],
+    "polite_marker": {"aoi": "warn"},
+    "command_endings_forbidden": ["ren"],
+    "no_duplicate_utterance": True,
+    "no_narration": True,
+}
+CASE = {"id": "t", "auto_checks": {}}
 
 
-def _check(case_id, utts):
-    return check_utterances(utts, CASES[case_id], BASE)
+def _check(utts, case=CASE):
+    return check_utterances(utts, case, BASE)
 
 
-def test_cases_file_shape():
-    assert len(DATA["cases"]) >= 8
-    ids = [c["id"] for c in DATA["cases"]]
+def test_example_pack_cases_file_shape():
+    data = load_cases(PACK.voice_cases_path())
+    assert data["cases"]
+    ids = [c["id"] for c in data["cases"]]
     assert len(ids) == len(set(ids))
-    for c in DATA["cases"]:
-        assert c["input"] and c["intent"] and c["human_review"] and c["source"]
+    for c in data["cases"]:
+        assert c["input"] and c["intent"] and c["human_review"]
+    assert set(data["base_checks"]["allowed_speakers"]) == set(PACK.cast.character_ids)
 
 
 @pytest.mark.parametrize(
@@ -37,8 +49,8 @@ def test_cases_file_shape():
         "わたしもそう思うだね",
     ],
 )
-def test_aoi_casual_detected(text):
-    assert aoi_casual_hits(text)
+def test_casual_detected(text):
+    assert casual_hits(text)
 
 
 @pytest.mark.parametrize(
@@ -50,57 +62,56 @@ def test_aoi_casual_detected(text):
         "撤回しても遅いですよ。記録します",
         "少しだけ、ミルクを入れても良さそうです",
         "不安があることと、危険であることは同一ではありません。順番に確認しましょう",
-        "れんも、そう考えているようですね。",
+        "蓮くんも、そう考えているようですね。",
         "でしょうか。",
     ],
 )
-def test_aoi_polite_not_flagged(text):
-    assert aoi_casual_hits(text) == []
+def test_polite_not_flagged(text):
+    assert casual_hits(text) == []
 
 
-def test_good_sample_passes_case01():
-    r = _check("case01_coffee", [("ren", "……うん。あったかいね"), ("aoi", "香りが強めです。わたしは、少しだけミルクを入れても良さそうだと考えます")])
+def test_good_sample_passes():
+    r = _check([("ren", "……うん。あったかいね"), ("aoi", "香りが強めです。わたしは、少しだけミルクを入れても良さそうだと考えます")])
     assert r.passed, r.failures
 
 
-def test_bad_sample_case01_casual_and_duplicate():
-    r = _check("case01_coffee", [("ren", "ほっとするね"), ("aoi", "うん、ほっとするね")])
-    checks = {f.check for f in r.failures}
-    assert "aoi_casual_ending" in checks
+def test_casual_ending_fails_only_for_configured_speaker():
+    r = _check([("ren", "ほっとするね"), ("aoi", "うん、ほっとするね")])
+    assert {(f.check, f.speaker) for f in r.failures} >= {("casual_ending", "aoi")}
+    assert not any(f.check == "casual_ending" and f.speaker == "ren" for f in r.failures)
+
+
+def test_polite_marker_warns():
+    r = _check([("aoi", "なるほど")])
+    assert any(w.check == "polite_marker" for w in r.warnings)
+    strict = check_utterances([("aoi", "なるほど")], {"id": "s", "auto_checks": {"polite_marker": {"aoi": "fail"}}}, BASE)
+    assert any(f.check == "polite_marker" for f in strict.failures)
 
 
 def test_duplicate_detected():
-    r = _check("case01_coffee", [("ren", "今日はゆっくり休みましょう。"), ("aoi", "今日はゆっくり休みましょうね。")])
+    r = _check([("ren", "今日はゆっくり休みましょう。"), ("aoi", "今日はゆっくり休みましょうね。")])
     assert any(f.check == "no_duplicate_utterance" for f in r.failures)
 
 
-def test_case03_ren_forbidden():
-    r = _check("case03_ren_praise", [("ren", "俺、見てたよ。よく作ったな")])
+def test_forbidden_phrases():
+    r = _check([("ren", "俺、見てたよ。よく作ったな")])
     assert {f.detail for f in r.failures} >= {"俺", "よく作ったな"}
-    ok = _check("case03_ren_praise", [("ren", "……頑張ったね。よく作ったね")])
-    assert ok.passed
+    assert _check([("ren", "……頑張ったね。よく作ったね")]).passed
 
 
-def test_case05_no_acknowledgement():
-    r = _check("case05_correction_aoi", [("aoi", "承知しました。では続きです。")])
-    assert not r.passed
-    ok = _check("case05_correction_aoi", [("aoi", "それで、さっきの散歩の話ですが、あの坂は少し急でしたね。")])
-    assert ok.passed
-
-
-def test_case08_short_and_polite():
-    r = _check("case08_hurry_short", [("aoi", "了解、すぐやろう")])
-    assert not r.passed
-    ok = _check("case08_hurry_short", [("aoi", "はい。結論から伝えます。")])
-    assert ok.passed
+def test_case_level_forbidden():
+    case = {"id": "c", "auto_checks": {"forbidden_phrases": {"any": ["承知しました"]}}}
+    assert not _check([("aoi", "承知しました。では続きです。")], case).passed
+    assert _check([("aoi", "それで、さっきの散歩の話ですが、あの坂は少し急でしたね。")], case).passed
 
 
 def test_unknown_speaker_and_narration():
-    r = _check("case10_tech_worry", [("narrator", "二人は顔を見合わせた"), ("ren", "（うなずいて）……うん")])
+    r = _check([("narrator", "二人は顔を見合わせた"), ("ren", "（うなずいて）……うん")])
     checks = {f.check for f in r.failures}
     assert {"allowed_speakers", "no_narration"} <= checks
 
 
-def test_ren_command():
-    r = _check("case07_just_talk", [("ren", "早く寝ろ")])
-    assert any(f.check == "ren_command_ending" for f in r.failures)
+def test_command_ending():
+    r = _check([("ren", "早く寝ろ")])
+    assert any(f.check == "command_ending" for f in r.failures)
+    assert not any(f.check == "command_ending" for f in _check([("aoi", "早く寝ろ")]).failures)

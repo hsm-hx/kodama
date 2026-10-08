@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import dataclasses
 
+from pathlib import Path
+
+from kodama.personas import load_pack
 from kodama.domain import (
     EntityKind,
     MemoryDraft,
@@ -12,10 +15,13 @@ from kodama.domain import (
     MemoryOrigin,
     MemoryStatus,
     NodeType,
-    Speaker,
     TurnStatus,
     Usage,
 )
+
+EXAMPLE_PACK_DIR = Path(__file__).resolve().parents[1] / "packs" / "example"
+PACK = load_pack(EXAMPLE_PACK_DIR)
+CAST = PACK.cast
 
 SETTINGS = {"timezone": "Asia/Tokyo", "model": "claude-opus-5-5", "max_memories": 8}
 
@@ -67,28 +73,28 @@ def seed_store(store) -> SeedIds:
 
     t1, u1 = store.begin_turn(s1.id, "コーヒー、おいしい。ほっとするよね", "mock", "mock-1", persona_ids)
     replies1 = [
-        (Speaker.REN, "……うん。湯気、ちょうどいいね"),
-        (Speaker.AOI, "少しだけ、ミルクを入れても良さそうです"),
+        ("ren", "……うん。湯気、ちょうどいいね"),
+        ("aoi", "少しだけ、ミルクを入れても良さそうです"),
     ]
     store.complete_turn(t1.id, replies1, Usage(120, 40, 900, 30))
-    transcript += [("user", u1.text), *[(s.value, t) for s, t in replies1]]
+    transcript += [("user", u1.text), *[(s, t) for s, t in replies1]]
     turn_ids.append(t1.id)
     user_ids.append(u1.id)
 
     t2, u2 = store.begin_turn(s1.id, "蓮、くたくたになったけど服を作れたよ", "mock", "mock-1", persona_ids)
-    replies2 = [(Speaker.REN, "頑張ったね。今日は、ここまででいいよ")]
+    replies2 = [("ren", "頑張ったね。今日は、ここまででいいよ")]
     candidates = [
         MemoryDraft(
             body="葵は、あなたが疲れていても服を仕上げたことを、根気の表れとして受け取った",
             kind=MemoryKind.CHARACTER_VIEW,
-            perspective=Speaker.AOI,
+            perspective="aoi",
             tags=("服作り",),
         ),
         MemoryDraft(body="いつか二人で布を選びに行くかもしれない", kind=MemoryKind.IMAGINATION, tags=("服作り",)),
         MemoryDraft(body="あなたはミシンを持っていると話した", kind=MemoryKind.USER_STATED, tags=("ミシン",)),
     ]
     store.complete_turn(t2.id, replies2, Usage(None, None), candidates)
-    transcript += [("user", u2.text), *[(s.value, t) for s, t in replies2]]
+    transcript += [("user", u2.text), *[(s, t) for s, t in replies2]]
     turn_ids.append(t2.id)
     user_ids.append(u2.id)
 
@@ -127,7 +133,7 @@ def seed_store(store) -> SeedIds:
         MemoryDraft(
             body="葵はミルクを少し入れる飲み方を勧めた",
             kind=MemoryKind.CHARACTER_VIEW,
-            perspective=Speaker.AOI,
+            perspective="aoi",
             tags=("ミルク",),
             occurred_at="2026-10-07T08:00:00+09:00",
             source_message_ids=(u1.id,),

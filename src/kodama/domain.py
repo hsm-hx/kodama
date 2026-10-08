@@ -7,10 +7,11 @@ Timestamps are ISO 8601 strings with a UTC offset.
 from __future__ import annotations
 
 import dataclasses
+import re
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Iterable
 from zoneinfo import ZoneInfo
 
 DEFAULT_TIMEZONE = "Asia/Tokyo"
@@ -42,13 +43,85 @@ def is_uuid(value: object) -> bool:
         return False
 
 
-class Speaker(StrEnum):
-    USER = "user"
-    REN = "ren"
-    AOI = "aoi"
+SPEAKER_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+MAX_CHARACTERS = 4
 
 
-CHARACTER_SPEAKERS = (Speaker.REN, Speaker.AOI)
+def is_speaker_id(value: object) -> bool:
+    return isinstance(value, str) and SPEAKER_ID_RE.fullmatch(value) is not None
+
+
+@dataclasses.dataclass(frozen=True)
+class CastMember:
+    id: str
+    display_name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Cast:
+    """会話の参加者。ユーザー1人とキャラクター1〜4人。IDはDBに保存される話者ID。"""
+
+    user: CastMember
+    characters: tuple[CastMember, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.characters, tuple):
+            object.__setattr__(self, "characters", tuple(self.characters))
+        ids = [self.user.id, *(c.id for c in self.characters)]
+        for i in ids:
+            if not is_speaker_id(i):
+                raise ValueError(f"invalid speaker id: {i!r}")
+        if not 1 <= len(self.characters) <= MAX_CHARACTERS:
+            raise ValueError(f"characters must be 1..{MAX_CHARACTERS}")
+        if len(set(ids)) != len(ids) or "common" in ids:
+            raise ValueError("speaker ids must be unique and must not be 'common'")
+        for m in (self.user, *self.characters):
+            if not isinstance(m.display_name, str) or not m.display_name.strip():
+                raise ValueError(f"display_name required for {m.id!r}")
+
+    @property
+    def user_id(self) -> str:
+        return self.user.id
+
+    @property
+    def character_ids(self) -> tuple[str, ...]:
+        return tuple(c.id for c in self.characters)
+
+    @property
+    def speaker_ids(self) -> tuple[str, ...]:
+        return (self.user.id, *self.character_ids)
+
+    @property
+    def persona_keys(self) -> tuple[str, ...]:
+        return ("common", *self.character_ids)
+
+    def label(self, speaker_id: str) -> str:
+        for m in (self.user, *self.characters):
+            if m.id == speaker_id:
+                return m.display_name
+        return speaker_id
+
+    def same_ids(self, other: "Cast") -> bool:
+        return self.user.id == other.user.id and self.character_ids == other.character_ids
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "user": {"id": self.user.id, "display_name": self.user.display_name},
+            "characters": [{"id": c.id, "display_name": c.display_name} for c in self.characters],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Cast":
+        if not isinstance(data, dict) or not isinstance(data.get("user"), dict):
+            raise ValueError("cast.user is required")
+        chars = data.get("characters")
+        if not isinstance(chars, list):
+            raise ValueError("cast.characters must be a list")
+        def member(d: Any) -> CastMember:
+            if not isinstance(d, dict) or set(d) != {"id", "display_name"}:
+                raise ValueError(f"invalid cast member: {d!r}")
+            return CastMember(id=d["id"], display_name=d["display_name"])
+        return cls(user=member(data["user"]), characters=tuple(member(c) for c in chars))
 
 
 class TurnStatus(StrEnum):
@@ -65,7 +138,7 @@ class PersonaStatus(StrEnum):
 
 class MemoryKind(StrEnum):
     USER_STATED = "user_stated"  # 本人が話したこと・確認された設定（客観的事実ではない）
-    CHARACTER_VIEW = "character_view"  # 蓮または葵の受け取り方（perspective 必須）
+    CHARACTER_VIEW = "character_view"  # キャラクターの受け取り方（perspective 必須）
     IMAGINATION = "imagination"  # 想像・仮説
 
 
@@ -170,13 +243,11 @@ class Turn(_Record):
 
 @dataclasses.dataclass(frozen=True)
 class Message(_Record):
-    _ENUMS = {"speaker": Speaker}
-
     id: str
     session_id: str
     turn_id: str
     seq: int
-    speaker: Speaker
+    speaker: str
     text: str
     created_at: str
 
@@ -204,12 +275,12 @@ class PersonaVersion(_Record):
 
 @dataclasses.dataclass(frozen=True)
 class MemoryDraft(_Record):
-    _ENUMS = {"kind": MemoryKind, "perspective": Speaker}
+    _ENUMS = {"kind": MemoryKind}
     _TUPLES = ("subjects", "tags", "aliases", "source_message_ids", "source_excerpt_ids")
 
     body: str
     kind: MemoryKind
-    perspective: Speaker | None = None
+    perspective: str | None = None
     subjects: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
@@ -217,18 +288,25 @@ class MemoryDraft(_Record):
     source_message_ids: tuple[str, ...] = ()
     source_excerpt_ids: tuple[str, ...] = ()
 
-    def validate(self) -> None:
-        validate_memory_fields(self.body, self.kind, self.perspective, self.occurred_at)
+    def validate(self, character_ids: Iterable[str] | None = None) -> None:
+        validate_memory_fields(self.body, self.kind, self.perspective, self.occurred_at, character_ids)
 
 
 def validate_memory_fields(
-    body: str, kind: MemoryKind, perspective: Speaker | None, occurred_at: str | None
+    body: str,
+    kind: MemoryKind,
+    perspective: str | None,
+    occurred_at: str | None,
+    character_ids: Iterable[str] | None = None,
 ) -> None:
+    """character_ids を渡すと perspective がその中にあるかも確かめる（省略時は形式のみ）。"""
     if not isinstance(body, str) or not body.strip():
         raise ValueError("memory body must be non-empty")
     if kind == MemoryKind.CHARACTER_VIEW:
-        if perspective not in CHARACTER_SPEAKERS:
-            raise ValueError("character_view requires perspective ren or aoi")
+        if not is_speaker_id(perspective):
+            raise ValueError("character_view requires a character perspective")
+        if character_ids is not None and perspective not in set(character_ids):
+            raise ValueError(f"perspective {perspective!r} is not a character in the cast")
     elif perspective is not None:
         raise ValueError(f"{kind.value} must not have a perspective")
     if occurred_at is not None:
@@ -239,7 +317,6 @@ def validate_memory_fields(
 class MemoryVersion(_Record):
     _ENUMS = {
         "kind": MemoryKind,
-        "perspective": Speaker,
         "origin": MemoryOrigin,
         "status": MemoryStatus,
     }
@@ -249,7 +326,7 @@ class MemoryVersion(_Record):
     memory_id: str
     body: str
     kind: MemoryKind
-    perspective: Speaker | None
+    perspective: str | None
     subjects: tuple[str, ...]
     tags: tuple[str, ...]
     aliases: tuple[str, ...]

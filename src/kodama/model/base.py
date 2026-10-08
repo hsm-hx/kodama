@@ -14,6 +14,8 @@ class ModelRequest:
     max_tokens: int
     timeout_s: float
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 構造化出力の JSON Schema（話者の enum を含む）。None なら制約なし
+    output_schema: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
