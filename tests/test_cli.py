@@ -168,11 +168,11 @@ def test_unknown_command_and_model_text_never_run_commands(tmp_path):
 
 def test_model_override_shown_at_real_api_confirmation(tmp_path):
     s = Session(tmp_path, provider="claude")
-    code, out, made = s.run(["n", "n"], extra=("--model", "claude-haiku-5-5"))
+    code, out, made = s.run(["n", "n"], extra=("--model", "claude-sonnet-5-5"))
     assert code == 0 and made == []
-    assert any("モデル claude-haiku-5-5" in l for l in out)
+    assert any("モデル claude-sonnet-5-5" in l for l in out)
     code, out, made = s.run(["n", "n"])
-    assert any("モデル claude-sonnet-5-5" in l for l in out)  # 既定
+    assert any("モデル claude-haiku-5-5" in l for l in out)  # 既定
 
 
 def test_model_override_reaches_adapter_config(tmp_path):

@@ -3,9 +3,9 @@
 
 provider = "mock"            # "mock"（既定・APIキー不要）か "claude"（実API。起動時に確認あり）
 # provider = "claude" のときのモデルID。選択肢:
-#   "claude-sonnet-5-5"（既定） / "claude-haiku-5-5"（さらに安価） / "claude-opus-5-5"
+#   "claude-haiku-5-5"（既定・安価） / "claude-sonnet-5-5"（声が崩れるときに） / "claude-opus-5-5"
 # 起動時に --model <ID> で一時的に上書きもできる
-model = "claude-sonnet-5-5"
+model = "claude-haiku-5-5"
 effort = "low"               # low / medium / high / xhigh / max
 api_key_env = "ANTHROPIC_API_KEY"  # キーを読む環境変数の「名前」
 

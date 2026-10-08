@@ -23,7 +23,7 @@ class ConfigError(Exception):
 @dataclasses.dataclass(frozen=True)
 class Config:
     provider: str = "mock"
-    model: str = "claude-sonnet-5-5"
+    model: str = "claude-haiku-5-5"
     effort: str = "low"
     api_key_env: str = "ANTHROPIC_API_KEY"
     db_path: str = "data/kodama.db"

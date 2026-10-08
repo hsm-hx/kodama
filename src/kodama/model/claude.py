@@ -23,7 +23,7 @@ from .base import (
     redact,
 )
 
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 
 def _default_client_factory(api_key: str, timeout_s: float) -> Any:
