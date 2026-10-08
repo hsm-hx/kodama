@@ -160,3 +160,20 @@ def test_import_file_failure_leaves_no_target(tmp_path, monkeypatch):
         migration.import_file(export, target)
     assert not target.exists()
     assert [p.name for p in tmp_path.iterdir() if "importing" in p.name] == []
+
+
+@pytest.mark.parametrize("point", ["complete_turn.after_messages", "complete_turn.after_candidates"])
+def test_complete_turn_with_auto_approved_memory_is_atomic(faulty, point):
+    store, fault = faulty
+    session = store.create_session("s")
+    turn, _ = store.begin_turn(session.id, "やあ", "mock", "m")
+    cand = [MemoryDraft(body="記憶", kind=MemoryKind.USER_STATED)]
+    fault.point = point
+    with pytest.raises(Boom):
+        store.complete_turn(turn.id, [("ren", "うん")], candidates=cand, candidate_status=MemoryStatus.APPROVED)
+    assert store.get_turn(turn.id).status == TurnStatus.PENDING
+    assert len(store.list_messages(session.id)) == 1
+    assert store.list_memory_versions() == []
+    store.complete_turn(turn.id, [("ren", "うん")], candidates=cand, candidate_status=MemoryStatus.APPROVED)
+    [v] = store.list_memory_versions()
+    assert v.status == MemoryStatus.APPROVED and v.origin == MemoryOrigin.MODEL_CANDIDATE

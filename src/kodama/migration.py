@@ -50,6 +50,8 @@ SETTINGS_ALLOWLIST = frozenset(
         "max_context_chars",
         "max_link_hops",
         "max_links_per_node",
+        "memory_auto_approve",
+        "show_memory_notices",
     }
 )
 

@@ -22,3 +22,9 @@ max_candidates_scanned = 50  # 検索で見る候補の上限
 max_link_hops = 1            # 関連リンクをたどる段数（0 か 1）
 max_links_per_node = 10
 max_context_chars = 12000    # 送る内容の文字数上限（超えたら古い会話から外す。原文は消さない）
+
+# 記憶: 人が「今から記録します」と断らないのと同じく、会話から出た記憶は承認なしで残して想起に使う。
+# 本人の登録（user_explicit）とは origin で区別して保存し、/memory recent で見直し、/memory reject で取り消せる。
+# false にすると従来どおり「候補」で保存し、/memory approve するまで想起しない。
+memory_auto_approve = true
+show_memory_notices = true   # 自動で残した記憶を台詞の後に「操作: 記憶に残しました」と1行表示する    # 送る内容の文字数上限（超えたら古い会話から外す。原文は消さない）

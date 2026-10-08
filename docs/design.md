@@ -42,8 +42,8 @@ personas/*.md（人物設定ファイル）──> personas.py ──> Store（�
 列挙:
 - `MemoryKind`: `user_stated`（本人が話したこと・確認された設定）, `character_view`（蓮または葵の受け取り方）, `imagination`（想像・仮説）。
   - `character_view` は `perspective` 必須（`ren`/`aoi`）。それ以外は `perspective=None`。`user_stated` は「本人がそう言った」記録であり、客観的事実とはしない。
-- `MemoryOrigin`: `user_explicit`（本人が登録）, `model_candidate`（モデルの候補）。
-- `MemoryStatus`: `candidate`, `approved`, `rejected`, `superseded`（訂正で置換）, `invalidated`（無効化）。
+- `MemoryOrigin`: `user_explicit`（本人が登録）, `model_candidate`（会話からモデルが出した記憶）。origin は status と独立で、自動承認しても `model_candidate` のまま残し、本人登録と区別する。
+- `MemoryStatus`: `candidate`, `approved`, `rejected`, `superseded`（訂正で置換）, `invalidated`（無効化）。モデル由来の記憶は、設定 `memory_auto_approve`（既定 true）なら最初から `approved`、false なら `candidate`。自動承認済みの記憶を本人が却下する操作は、状態遷移を増やさず `approved→invalidated` に読み替える（`rejected` は「一度も採用されなかった候補」の意味を保つ。移行検証にも影響しない）。事後確認は `/memory recent`。
 - Link の `src_type`/`dst_type`: `memory`（memory_id を指す）, `entity`。relation 例: `about`, `related`, `supersedes`(version→version, src_type/dst_type=`memory_version`)。関連は因果を意味しない。
 
 ## 4. Store Protocol（論理操作）
@@ -53,7 +53,7 @@ personas/*.md（人物設定ファイル）──> personas.py ──> Store（�
 - セッション: `create_session(title) -> Session`, `get_session(id)`, `list_sessions()`
 - ターン:
   - `begin_turn(session_id, user_text, provider, model, persona_version_ids, context_memory_version_ids, context_message_ids) -> (Turn, Message)` — 入力メッセージ＋`pending` ターンを原子的に保存。APIより前に呼ぶ。
-  - `complete_turn(turn_id, utterances: list[(speaker,text)], usage, candidates: list[MemoryDraft]) -> list[Message]` — 返答メッセージ＋候補記憶＋status=`completed` を原子的に保存。`pending` 以外のターンには何もしない（既に `completed` なら既存メッセージを返す＝二重記録しない）。
+  - `complete_turn(turn_id, utterances: list[(speaker,text)], usage, candidates: list[MemoryDraft], model=None, candidate_status=candidate|approved) -> list[Message]` — 返答メッセージ＋モデル由来の記憶（`candidate_status` の状態で）＋status=`completed` を原子的に保存。`pending` 以外のターンには何もしない（既に `completed` なら既存メッセージを返す＝二重記録しない）。
   - `fail_turn(turn_id, status, error, usage=None)` — `failed`/`interrupted`。`pending` のときのみ。応答が返ったが使えなかった場合の利用量も保存する。
   - `recover_incomplete_turns() -> list[Turn]` — 起動時、残った `pending` を `interrupted` にする。再送はしない。
 - メッセージ: `list_messages(session_id) `（seq順）, `recent_messages(session_id, limit)`（completed ターンのものと、未完了ターンのユーザー入力を区別できるよう Turn status を併せて返す）
@@ -90,7 +90,10 @@ personas/*.md（人物設定ファイル）──> personas.py ──> Store（�
                          "perspective": "ren"|"aoi"|null, "subjects": [], "tags": []}]}
 ```
 - utterances は1〜4件。speaker は `ren`/`aoi` のみ、text は空白除去後に非空・最大1000字。違反は `InvalidReply` とし、会話として保存しない（ターンは `failed`）。
-- memory_candidates は省略可。不正な候補は捨てて警告（発話は有効なら保存）。候補は必ず `candidate` 状態で、出典は当該ターンのユーザー入力メッセージID。
+- memory_candidates は省略可。不正な候補は捨てて警告（発話は有効なら保存）。候補の保存状態は `memory_auto_approve` に従う（true: `approved`、false: `candidate`。origin は常に `model_candidate`）。出典は当該ターンのユーザー入力メッセージID。
+
+- 記憶候補は「次の会話でも覚えておく価値があるものだけ。迷ったら出さない」。承認なしで想起に使われるため絞る。記録・記憶することを台詞で宣言しない（葵の冗談としての「記録します」は人物の台詞なので禁止しない）。
+- 自動で残したターンは台詞の後に `操作: 記憶に残しました: <ID> <先頭20字>` を1行表示（`show_memory_notices=false` で非表示）。
 
 ## 7. 移行ファイル
 

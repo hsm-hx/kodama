@@ -192,3 +192,53 @@ def test_usage_line_with_cache(tmp_path):
     code, out, _ = s.run(["やあ", "/quit"], adapter=adapter)
     line = next(l for l in out if "利用量" in l)
     assert "入力 940（うちキャッシュ読込 800 / 書込 40）・出力 12 トークン" in line
+
+
+def _auto_script(extra_cfg=""):
+    cand = {"body": "あなたは朝にコーヒーを飲むと話した", "kind": "user_stated", "perspective": None,
+            "subjects": ["あなた"], "tags": ["コーヒー"]}
+    reply = {"utterances": [{"speaker": "aoi", "text": "いい香りです。"}], "memory_candidates": [cand]}
+    return ScriptedAdapter([reply, reply, reply, reply])
+
+
+def test_auto_memory_notice_recent_reject_and_recall(tmp_path):
+    s = Session(tmp_path)
+    ad = _auto_script()
+    code, out, _ = s.run(["朝はコーヒーを飲むんだ", "/memory recent", "/memory list", "/quit"], adapter=ad)
+    text = "\n".join(out)
+    assert "操作: 記憶に残しました: " in text and "あなたは朝にコーヒーを飲" in text
+    assert "会話から自動" in text and "承認済み" in text
+    line = next(l for l in out if "記憶に残しました" in l)
+    mem_id = line.split("記憶に残しました: ")[1].split()[0]
+    assert "承認待ち" not in text
+
+    # 次のセッションで想起される
+    code, out, _ = s.run(["/session new", "/context コーヒー", "/quit"], adapter=ad)
+    assert mem_id in "\n".join(out)
+
+    # reject は効き、以後は想起されない。revise も効く
+    code, out, _ = s.run([f"/memory reject {mem_id}", "/context コーヒー", "/memory recent 1", "/quit"], adapter=ad)
+    text = "\n".join(out)
+    assert "無効" in text
+    ctx = text.split("次の送信内容")[1]
+    assert mem_id not in ctx.split("除外")[0]
+
+
+def test_auto_memory_revise_and_notice_off(tmp_path):
+    s = Session(tmp_path)
+    s.config.write_text(s.config.read_text() + "show_memory_notices = false\n", encoding="utf-8")
+    ad = _auto_script()
+    code, out, _ = s.run(["朝はコーヒーを飲むんだ", "/memory recent", "/quit"], adapter=ad)
+    assert not any(l.startswith("操作: 記憶に残しました") for l in out)
+    mem_id = next(l for l in out if "会話から自動" in l).split("[")[0].split()[-1]
+    code, out, _ = s.run([f"/memory revise {mem_id} あなたは夜にコーヒーを飲むと話した", "/context コーヒー", "/quit"], adapter=ad)
+    text = "\n".join(out)
+    assert "夜にコーヒー" in text.split("次の送信内容")[1]
+
+
+def test_auto_approve_off_in_config_keeps_candidates(tmp_path):
+    s = Session(tmp_path)
+    s.config.write_text(s.config.read_text() + "memory_auto_approve = false\n", encoding="utf-8")
+    code, out, _ = s.run(["朝はコーヒーを飲むんだ", "/quit"], adapter=_auto_script())
+    text = "\n".join(out)
+    assert "記憶に残しました" not in text and "未承認" in text

@@ -382,6 +382,7 @@ class SQLiteStore:
         usage: Usage | None = None,
         candidates: Sequence[MemoryDraft] = (),
         model: str | None = None,
+        candidate_status: MemoryStatus = MemoryStatus.CANDIDATE,
     ) -> list[Message]:
         parsed: list[tuple[Speaker, str]] = []
         for speaker, text in utterances:
@@ -393,6 +394,9 @@ class SQLiteStore:
             parsed.append((sp, text))
         if not parsed:
             raise ValueError("no utterances")
+        candidate_status = MemoryStatus(candidate_status)
+        if candidate_status not in (MemoryStatus.CANDIDATE, MemoryStatus.APPROVED):
+            raise ValueError("model memories must be saved as candidate or approved")
         for draft in candidates:
             draft.validate()
 
@@ -428,7 +432,7 @@ class SQLiteStore:
                     draft,
                     memory_id=new_id(),
                     origin=MemoryOrigin.MODEL_CANDIDATE,
-                    status=MemoryStatus.CANDIDATE,
+                    status=candidate_status,
                     source_message_ids=tuple(sources),
                     supersedes=None,
                     reason=None,

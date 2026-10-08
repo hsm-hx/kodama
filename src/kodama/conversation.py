@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from kodama.config import Config
 from kodama.context import ContextPlan, build_context, to_model_request
-from kodama.domain import MemoryDraft, MemoryKind, Message, PersonaVersion, Speaker, Turn, TurnStatus, Usage
+from kodama.domain import MemoryDraft, MemoryKind, MemoryOrigin, MemoryStatus, MemoryVersion, Message, PersonaVersion, Speaker, Turn, TurnStatus, Usage
 from kodama.model.base import (
     ModelAdapter,
     ModelAPIError,
@@ -41,6 +41,7 @@ class TurnOutcome:
     is_mock: bool = False
     warnings: list[str] = field(default_factory=list)
     plan: ContextPlan | None = None
+    saved_memories: list[MemoryVersion] = field(default_factory=list)  # このターンで保存した記憶（自動承認分）
 
 
 @dataclass
@@ -169,7 +170,11 @@ class ConversationService:
         outcome.warnings = warnings
 
         try:
-            replies = self.store.complete_turn(turn.id, parsed.utterances, usage, drafts, model=result.model)
+            auto = self.config.memory_auto_approve
+            replies = self.store.complete_turn(
+                turn.id, parsed.utterances, usage, drafts, model=result.model,
+                candidate_status=MemoryStatus.APPROVED if auto else MemoryStatus.CANDIDATE,
+            )
         except Exception as e:
             outcome.error_kind = "storage"
             outcome.error_message = redact(f"返答を保存できませんでした: {type(e).__name__}: {e}")
@@ -177,4 +182,12 @@ class ConversationService:
             return outcome
         outcome.ok = True
         outcome.replies = replies
+        if self.config.memory_auto_approve and drafts:
+            try:
+                outcome.saved_memories = [
+                    v for v in self.store.list_memory_versions([MemoryStatus.APPROVED])
+                    if user_msg.id in v.source_message_ids and v.origin == MemoryOrigin.MODEL_CANDIDATE
+                ]
+            except Exception:
+                pass
         return outcome

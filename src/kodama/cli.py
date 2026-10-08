@@ -46,7 +46,8 @@ HELP = """操作: 使えるコマンド
   /memory add <本文> [--kind user_stated|character_view|imagination] [--perspective ren|aoi]
               [--tags a,b] [--about 名前] [--excerpt <抜粋ID先頭>]
                              記憶を登録（出典は直前のあなたの発言、または --excerpt の抜粋）
-  /memory approve|reject <ID先頭>   候補を承認・却下
+  /memory recent [N]         会話から自動で残った記憶を新しい順に（既定10件）
+  /memory approve|reject <ID先頭>   候補を承認・却下（自動で残った記憶への reject は無効化＝以後使わない）
   /memory revise <ID先頭> <新しい本文>  訂正（旧版は残り、通常の想起では使われない）
   /memory invalidate <ID先頭>       承認済みの記憶を無効化
   /excerpt add <題名> | <箇所> | <本文>   本人が選んだ資料の抜粋を出典として登録
@@ -69,6 +70,7 @@ KIND_SHORT = {
     MemoryKind.CHARACTER_VIEW: "受け取り方",
     MemoryKind.IMAGINATION: "想像",
 }
+ORIGIN_LABEL = {MemoryOrigin.USER_EXPLICIT: "本人登録", MemoryOrigin.MODEL_CANDIDATE: "会話から自動"}
 _PERSON_NAMES = {"あなた", "蓮", "葵", "同居人"}
 
 
@@ -210,6 +212,9 @@ class App:
             self.say(m.speaker, m.text)
         for w in outcome.warnings:
             self.op(w)
+        if self.config.show_memory_notices and outcome.saved_memories:
+            self.op("記憶に残しました: " + " / ".join(
+                f"{v.id[:8]} {v.body[:20]}{'…' if len(v.body) > 20 else ''}" for v in outcome.saved_memories))
         new_cands = [v for v in self.store.list_memory_versions([MemoryStatus.CANDIDATE])
                      if outcome.user_message_id in v.source_message_ids]
         if new_cands:
@@ -305,7 +310,7 @@ class App:
         view = f"・{SPEAKER_LABEL[v.perspective]}" if v.perspective else ""
         tags = f"  #{' #'.join(v.tags)}" if v.tags else ""
         src = "" if v.has_source else "  (出典なし)"
-        return f"{v.id[:8]} [{STATUS_LABEL[v.status]}] {KIND_SHORT[v.kind]}{view}: {v.body}{tags}{src}"
+        return f"{v.id[:8]} [{STATUS_LABEL[v.status]}・{ORIGIN_LABEL[v.origin]}] {KIND_SHORT[v.kind]}{view}: {v.body}{tags}{src}"
 
     def cmd_memory(self, rest) -> None:
         sub = rest[0] if rest else "list"
@@ -316,6 +321,21 @@ class App:
                 self.op("記憶はまだありません。")
             for v in versions:
                 self.op(self._memory_line(v))
+        elif sub == "recent":
+            try:
+                n = int(rest[1]) if len(rest) > 1 else 10
+                if n <= 0:
+                    raise ValueError
+            except ValueError:
+                self.op("件数は正の整数で指定してください。")
+                return
+            recent = [v for v in self.store.list_memory_versions()
+                      if v.origin == MemoryOrigin.MODEL_CANDIDATE]
+            recent.sort(key=lambda v: (v.recorded_at, v.id), reverse=True)
+            if not recent:
+                self.op("会話から自動で残った記憶はまだありません。")
+            for v in recent[:n]:
+                self.op(f"{self.fmt_time(v.recorded_at)} {self._memory_line(v)}")
         elif sub == "show" and len(rest) >= 2:
             self._memory_show(self._find_version(rest[1]))
         elif sub == "add" and len(rest) >= 2:
@@ -324,7 +344,11 @@ class App:
             v = self._find_version(rest[1])
             new = {"approve": MemoryStatus.APPROVED, "reject": MemoryStatus.REJECTED,
                    "invalidate": MemoryStatus.INVALIDATED}[sub]
-            updated = self.store.set_memory_status(v.id, new, "本人の操作")
+            reason = "本人の操作"
+            if sub == "reject" and v.status == MemoryStatus.APPROVED:
+                # 自動承認済みの記憶の却下は、既存の状態遷移どおり approved -> invalidated に読み替える
+                new, reason = MemoryStatus.INVALIDATED, "本人が取り消し（自動で残った記憶の却下）"
+            updated = self.store.set_memory_status(v.id, new, reason)
             self.op(self._memory_line(updated))
         elif sub == "revise" and len(rest) >= 3:
             v = self._find_version(rest[1])

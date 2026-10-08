@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -119,6 +120,8 @@ def test_usage_saved_and_model_recorded(cfg):
 
 
 def test_candidates_need_approval_before_recall(cfg):
+    # 従来方針（memory_auto_approve=false）の動作を維持して確かめる
+    cfg = dataclasses.replace(cfg, memory_auto_approve=False)
     cand = {"body": "あなたは朝にコーヒーを飲むと話した", "kind": "user_stated", "perspective": None,
             "subjects": ["あなた"], "tags": ["コーヒー"]}
     view = {"body": "蓮は、あなたが少し疲れていると受け取った", "kind": "character_view", "perspective": "ren",
@@ -200,3 +203,62 @@ def test_system_blocks_strip_meta_but_stored_body_is_full(cfg):
         assert pv.body == (Path(PERSONAS) / f"{key}.md").read_text(encoding="utf-8")
     assert plan.system_blocks[0].lstrip().startswith("#")
     store.close()
+
+
+_CAND = {"body": "あなたは朝にコーヒーを飲むと話した", "kind": "user_stated", "perspective": None,
+         "subjects": ["あなた"], "tags": ["コーヒー"]}
+
+
+def test_auto_approve_saves_approved_model_candidate_and_recalls_next_session(cfg):
+    adapter = ScriptedAdapter([reply(("aoi", "いい香りです。"), candidates=[_CAND]), reply(("ren", "うん。"))])
+    store, svc = open_service(cfg, adapter)
+    s1 = store.create_session("1")
+    out = svc.send(s1.id, "朝はコーヒーを飲むんだ")
+    [v] = store.list_memory_versions()
+    assert v.status == MemoryStatus.APPROVED and v.origin == MemoryOrigin.MODEL_CANDIDATE
+    assert v.source_message_ids == (out.user_message_id,)
+    assert [x.id for x in out.saved_memories] == [v.id]
+    store.close()
+    store, svc = open_service(cfg, adapter)  # 次の起動
+    s2 = store.create_session("2")
+    out2 = svc.send(s2.id, "コーヒーの話")
+    assert out2.plan.memory_version_ids == [v.id]
+    store.close()
+
+
+def test_auto_approve_off_keeps_candidates_unrecalled(cfg):
+    cfg = dataclasses.replace(cfg, memory_auto_approve=False)
+    adapter = ScriptedAdapter([reply(("aoi", "はい。"), candidates=[_CAND])])
+    store, svc = open_service(cfg, adapter)
+    s1 = store.create_session("1")
+    out = svc.send(s1.id, "朝はコーヒーを飲むんだ")
+    [v] = store.list_memory_versions()
+    assert v.status == MemoryStatus.CANDIDATE and out.saved_memories == []
+    assert svc.preview(store.create_session("2").id, "コーヒーの話").memory_version_ids == []
+    store.close()
+
+
+def test_auto_approve_still_drops_invalid_candidates(cfg):
+    bad = {"body": "", "kind": "user_stated", "perspective": None, "subjects": [], "tags": []}
+    bad2 = {"body": "受け取り", "kind": "character_view", "perspective": None, "subjects": [], "tags": []}
+    adapter = ScriptedAdapter([reply(("ren", "うん。"), candidates=[bad, bad2, _CAND])])
+    store, svc = open_service(cfg, adapter)
+    s = store.create_session("1")
+    out = svc.send(s.id, "朝はコーヒーを飲むんだ")
+    assert out.ok and len(store.list_memory_versions()) == 1 and out.warnings
+    store.close()
+
+
+def test_auto_approve_export_import_keeps_status_and_origin(cfg, tmp_path):
+    from kodama import migration
+    adapter = ScriptedAdapter([reply(("ren", "うん。"), candidates=[_CAND])])
+    store, svc = open_service(cfg, adapter)
+    svc.send(store.create_session("1").id, "朝はコーヒーを飲むんだ")
+    exp = tmp_path / "e.json"
+    migration.export_to_file(store, exp, {"memory_auto_approve": True})
+    store.close()
+    migration.import_file(exp, tmp_path / "n.db", active_db_path=cfg.db_path)
+    new = SQLiteStore(tmp_path / "n.db")
+    [v] = new.list_memory_versions()
+    assert v.status == MemoryStatus.APPROVED and v.origin == MemoryOrigin.MODEL_CANDIDATE
+    new.close()

@@ -97,6 +97,7 @@ class Store(Protocol):
         usage: Usage | None = None,
         candidates: Sequence[MemoryDraft] = (),
         model: str | None = None,
+        candidate_status: MemoryStatus = MemoryStatus.CANDIDATE,
     ) -> list[Message]: ...
     def fail_turn(
         self, turn_id: str, status: TurnStatus, error: str | None, usage: Usage | None = None

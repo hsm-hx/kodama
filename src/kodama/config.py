@@ -37,6 +37,8 @@ class Config:
     max_link_hops: int = 1
     max_links_per_node: int = 10
     max_context_chars: int = 12000
+    memory_auto_approve: bool = True  # モデル由来の記憶を承認済みで保存する（origin は model_candidate のまま）
+    show_memory_notices: bool = True  # 自動で残した記憶を台詞の後に1行表示する
 
     def validate(self) -> None:
         if self.provider not in PROVIDERS:
@@ -60,7 +62,7 @@ class Config:
         """export に載せてよい動作設定（秘密・パスを含まない）。"""
         keys = ("timezone", "provider", "model", "max_tokens", "timeout_seconds", "effort",
                 "max_recent_messages", "max_memories", "max_candidates_scanned", "max_context_chars",
-                "max_link_hops", "max_links_per_node")
+                "max_link_hops", "max_links_per_node", "memory_auto_approve", "show_memory_notices")
         return {k: getattr(self, k) for k in keys}
 
 
