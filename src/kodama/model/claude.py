@@ -23,7 +23,7 @@ from .base import (
     redact,
 )
 
-DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
 def _default_client_factory(api_key: str, timeout_s: float) -> Any:
@@ -34,6 +34,10 @@ def _default_client_factory(api_key: str, timeout_s: float) -> Any:
             "anthropic パッケージが入っていません。`uv sync --extra claude` で導入してください。"
         ) from None
     return anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=timeout_s)
+
+
+def _int_or_none(v: Any) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
 def _exception_classes() -> tuple[type, type, type] | None:
@@ -72,10 +76,15 @@ class ClaudeAdapter:
         output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": REPLY_SCHEMA}}
         if self.effort:
             output_config["effort"] = self.effort
+        system: list[dict[str, Any]] = [{"type": "text", "text": b} for b in request.system_blocks]
+        if system:
+            # 固定部分（人物設定＋出力規則）の末尾だけにブレークポイントを置く。
+            # トップレベルの自動 cache_control は、毎回変わる user content 側に付くので使わない。
+            system[-1]["cache_control"] = {"type": "ephemeral"}
         return {
             "model": self.model,
             "max_tokens": request.max_tokens,
-            "system": [{"type": "text", "text": b} for b in request.system_blocks],
+            "system": system,
             "messages": [{"role": "user", "content": request.user_content}],
             "output_config": output_config,
         }
@@ -110,6 +119,8 @@ class ClaudeAdapter:
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
         output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
+        cache_read = _int_or_none(getattr(usage, "cache_read_input_tokens", None)) if usage is not None else None
+        cache_write = _int_or_none(getattr(usage, "cache_creation_input_tokens", None)) if usage is not None else None
         stop_reason = getattr(response, "stop_reason", None)
         err: ModelError | None = None
         if stop_reason == "refusal":
@@ -120,6 +131,7 @@ class ClaudeAdapter:
             # 応答自体は返っているので利用量は記録できる
             err.input_tokens = input_tokens if isinstance(input_tokens, int) else None
             err.output_tokens = output_tokens if isinstance(output_tokens, int) else None
+            err.cache_read_tokens, err.cache_write_tokens = cache_read, cache_write
             raise err
         text = "".join(
             getattr(b, "text", "") for b in (getattr(response, "content", None) or []) if getattr(b, "type", None) == "text"
@@ -130,6 +142,8 @@ class ClaudeAdapter:
             model=getattr(response, "model", None) or self.model,
             input_tokens=input_tokens if isinstance(input_tokens, int) else None,
             output_tokens=output_tokens if isinstance(output_tokens, int) else None,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
             stop_reason=stop_reason,
             is_mock=False,
         )

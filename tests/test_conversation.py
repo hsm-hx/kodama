@@ -172,3 +172,31 @@ def test_injected_instructions_in_memory_and_log_are_data_only(cfg, tmp_path):
     assert content.count("<current_input>") == 1  # 区画を偽装できない
     assert "＜/data＞" in content
     store.close()
+
+
+def test_cache_usage_saved(cfg):
+    from kodama.model.base import ModelResult
+
+    adapter = ScriptedAdapter([ModelResult(json.dumps(reply(("ren", "うん。"))), "anthropic", "m", 100, 12, 800, 40)])
+    store, svc = open_service(cfg, adapter)
+    s = store.create_session("s")
+    out = svc.send(s.id, "ねえ")
+    turn = store.get_turn(out.turn_id)
+    assert (out.cache_read_tokens, out.cache_write_tokens) == (800, 40)
+    assert (turn.cache_read_tokens, turn.cache_write_tokens) == (800, 40)
+    store.close()
+
+
+def test_system_blocks_strip_meta_but_stored_body_is_full(cfg):
+    from kodama.context import build_context
+
+    store, svc = open_service(cfg, MockAdapter())
+    s = store.create_session("s")
+    plan = build_context(store, cfg, s.id, "やあ")
+    for block in plan.system_blocks:
+        assert "<!--" not in block and "source:" not in block.split("\n")[0]
+    for key, pv in plan.personas.items():
+        assert pv.body.startswith("<!--")  # 保存された版は全文
+        assert pv.body == (Path(PERSONAS) / f"{key}.md").read_text(encoding="utf-8")
+    assert plan.system_blocks[0].lstrip().startswith("#")
+    store.close()

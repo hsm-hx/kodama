@@ -219,9 +219,20 @@ class App:
     def _usage_line(self, outcome) -> None:
         if outcome.is_mock:
             return
-        i = "不明" if outcome.input_tokens is None else str(outcome.input_tokens)
         o = "不明" if outcome.output_tokens is None else str(outcome.output_tokens)
-        self.op(f"利用量: 入力 {i} / 出力 {o} トークン（料金は表示しません）")
+        parts = [outcome.input_tokens, outcome.cache_read_tokens, outcome.cache_write_tokens]
+        if outcome.input_tokens is None:
+            i = "不明"
+        else:
+            i = str(sum(p or 0 for p in parts))  # 合計入力 = 通常入力 + キャッシュ読込 + キャッシュ書込
+        detail = []
+        if outcome.cache_read_tokens is not None:
+            detail.append(f"キャッシュ読込 {outcome.cache_read_tokens}")
+        if outcome.cache_write_tokens is not None:
+            detail.append(f"書込 {outcome.cache_write_tokens}")
+        if detail:
+            i += f"（うち{' / '.join(detail)}）"
+        self.op(f"利用量: 入力 {i}・出力 {o} トークン（料金は表示しません）")
 
     # ---------------------------------------------------------------- commands
 
@@ -527,6 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", help="設定ファイル（TOML）。省略時は ./kodama.toml があれば使う")
     p.add_argument("--db", help="使うDBファイル（設定の db_path を上書き）")
     p.add_argument("--provider", choices=["mock", "claude"], help="設定の provider を上書き")
+    p.add_argument("--model", help="設定の model（モデルID）を上書き")
     p.add_argument("--new-session", action="store_true", help="新しいセッションで始める")
     return p
 
@@ -536,7 +548,7 @@ def main(argv: list[str] | None = None, input_fn=input, output_fn=print,
     args = build_parser().parse_args(argv)
     config_path = args.config or ("kodama.toml" if Path("kodama.toml").exists() else None)
     try:
-        config = load_config(config_path, {"db_path": args.db, "provider": args.provider})
+        config = load_config(config_path, {"db_path": args.db, "provider": args.provider, "model": args.model})
     except ConfigError as e:
         output_fn(f"操作: 設定エラー: {redact(str(e))}")
         return 2
@@ -546,7 +558,7 @@ def main(argv: list[str] | None = None, input_fn=input, output_fn=print,
             output_fn("操作: 終了します。")
             return 0
         if choice == "mock":
-            config = load_config(config_path, {"db_path": args.db, "provider": "mock"})
+            config = load_config(config_path, {"db_path": args.db, "provider": "mock", "model": args.model})
     Path(config.db_path).parent.mkdir(parents=True, exist_ok=True)
     store = SQLiteStore(config.db_path, timezone=config.timezone)
     try:

@@ -30,7 +30,7 @@ personas/*.md（人物設定ファイル）──> personas.py ──> Store（�
 | 型 | 主な項目 |
 |---|---|
 | Session | id, title, created_at, timezone |
-| Turn | id, session_id, seq(セッション内ターン番号), status(`pending`/`completed`/`failed`/`interrupted`), created_at, finished_at, error(要約, 秘密なし), provider, model, usage_input_tokens?, usage_output_tokens?, persona_version_ids[], context_memory_version_ids[], context_message_ids[] |
+| Turn | id, session_id, seq(セッション内ターン番号), status(`pending`/`completed`/`failed`/`interrupted`), created_at, finished_at, error(要約, 秘密なし), provider, model, usage_input_tokens?, usage_output_tokens?, cache_read_tokens?, cache_write_tokens?(旧データは欠落=None), persona_version_ids[], context_memory_version_ids[], context_message_ids[] |
 | Message | id, session_id, turn_id, seq, speaker(`user`/`ren`/`aoi`), text, created_at |
 | PersonaVersion | id, persona_key(`common`/`ren`/`aoi`), body(全文), content_hash, source_path(参考情報), created_at, status(`active`/`retired`), approved_at, note |
 | MemoryVersion | id, memory_id(論理記憶ID, 版をまたいで共通), body, kind, perspective, subjects[], tags[], aliases[], occurred_at?(不明ならNone), recorded_at, origin, status, source_message_ids[], source_excerpt_ids[], supersedes_version_id?, status_reason?, status_changed_at |
@@ -121,3 +121,8 @@ personas/*.md（人物設定ファイル）──> personas.py ──> Store（�
 - 音声: `Message(speaker, text, created_at, session_id, turn_id)` を発話単位で取り出せる。TTS は utterance 単位で `ModelResult.utterances` を受ければよい。
 - 日記: `SourceExcerpt`（本人が選んだ抜粋本文＋箇所）として取り込み、記憶の出典に使う。
 - 検索索引・グラフDBは正本から再構成できる派生物として追加する。正本の移動は export/import で行う。
+
+## プロンプトキャッシュ（Claude adapter）
+- system ブロックの最後（出力規則）だけに `cache_control: ephemeral` を付ける。人物設定3つ＋出力規則は毎回同一の固定部分で、日時など可変な内容は user content 側（`<now>`）にのみ置く。トップレベルの自動 cache_control は使わない。
+- 人物設定ファイル先頭の `<!-- -->` メタコメントは API に送る system ブロックからだけ除く（`personas.strip_meta`）。保存する版の本文・content_hash・承認フローはファイル全文のまま。
+- DB schema_version は 2（turns に cache_read_tokens / cache_write_tokens を ALTER TABLE ADD COLUMN。1 は起動時に自動移行）。移行ファイルの schema_version は 1 のまま、旧ファイル（新項目なし）は None として受け付ける。

@@ -36,6 +36,8 @@ class TurnOutcome:
     outcome_unknown: bool = False  # 送信後に結果が分からない（課金の有無も不明）
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     is_mock: bool = False
     warnings: list[str] = field(default_factory=list)
     plan: ContextPlan | None = None
@@ -125,8 +127,9 @@ class ConversationService:
             outcome.error_message = redact(str(e))
             outcome.outcome_unknown = e.outcome_unknown
             outcome.input_tokens, outcome.output_tokens = e.input_tokens, e.output_tokens
+            outcome.cache_read_tokens, outcome.cache_write_tokens = e.cache_read_tokens, e.cache_write_tokens
             self.store.fail_turn(turn.id, TurnStatus.FAILED, f"{kind}: {outcome.error_message}",
-                                 Usage(e.input_tokens, e.output_tokens))
+                                 Usage(e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_write_tokens))
             return outcome
         except Exception as e:  # 想定外。内容は秘密を伏せて要約だけ残す
             outcome.error_kind = "unexpected"
@@ -137,7 +140,8 @@ class ConversationService:
 
         outcome.input_tokens, outcome.output_tokens = result.input_tokens, result.output_tokens
         outcome.is_mock = bool(result.is_mock)
-        usage = Usage(result.input_tokens, result.output_tokens)
+        outcome.cache_read_tokens, outcome.cache_write_tokens = result.cache_read_tokens, result.cache_write_tokens
+        usage = Usage(result.input_tokens, result.output_tokens, result.cache_read_tokens, result.cache_write_tokens)
         try:
             parsed = parse_reply(result.raw_text)
         except InvalidReply as e:

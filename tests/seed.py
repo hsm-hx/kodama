@@ -70,7 +70,7 @@ def seed_store(store) -> SeedIds:
         (Speaker.REN, "……うん。湯気、ちょうどいいね"),
         (Speaker.AOI, "少しだけ、ミルクを入れても良さそうです"),
     ]
-    store.complete_turn(t1.id, replies1, Usage(120, 40))
+    store.complete_turn(t1.id, replies1, Usage(120, 40, 900, 30))
     transcript += [("user", u1.text), *[(s.value, t) for s, t in replies1]]
     turn_ids.append(t1.id)
     user_ids.append(u1.id)
@@ -93,7 +93,7 @@ def seed_store(store) -> SeedIds:
     user_ids.append(u2.id)
 
     t3, u3 = store.begin_turn(s1.id, "失敗するはずの入力", "mock", "mock-1", persona_ids)
-    store.fail_turn(t3.id, TurnStatus.FAILED, "timeout")
+    store.fail_turn(t3.id, TurnStatus.FAILED, "timeout", Usage(5, 0, 7, 0))
     transcript.append(("user", u3.text))
     turn_ids.append(t3.id)
     user_ids.append(u3.id)

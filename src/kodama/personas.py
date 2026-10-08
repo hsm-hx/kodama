@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,15 @@ class PersonaFile:
 
 def content_hash(body: str) -> str:
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+_META_RE = re.compile(r"\A\s*<!--.*?-->[ \t]*\r?\n?", re.DOTALL)
+
+
+def strip_meta(body: str) -> str:
+    """先頭の `<!-- ... -->`（key/source/note のメタ情報）だけを取り除く。API に送る system ブロック用。
+    保存する版の本文・content_hash には使わない。"""
+    return _META_RE.sub("", body, count=1).lstrip("\r\n")
 
 
 def load_persona_file(directory: str | Path, key: str) -> PersonaFile:

@@ -82,7 +82,7 @@ def test_claude_params(monkeypatch):
     assert made["timeout"] == 30.0 and made["key"] == SECRET
     assert params["model"] == "claude-opus-5-5"
     assert params["max_tokens"] == 1200
-    assert params["system"] == [{"type": "text", "text": "共通"}, {"type": "text", "text": "蓮"}]
+    assert params["system"] == [{"type": "text", "text": "共通"}, {"type": "text", "text": "蓮", "cache_control": {"type": "ephemeral"}}]
     assert params["messages"] == [{"role": "user", "content": REQ.user_content}]
     assert params["output_config"] == {"format": {"type": "json_schema", "schema": REPLY_SCHEMA}, "effort": "low"}
     assert "thinking" not in params and "fallbacks" not in params
@@ -187,3 +187,45 @@ def test_scripted_adapter():
         s.generate(REQ)
     assert parse_reply(s.generate(REQ).raw_text).utterances == [("aoi", "はい。")]
     assert s.call_count == 3
+
+
+def _response_cache(text, usage):
+    r = _response(text)
+    r.usage = SimpleNamespace(**usage)
+    return r
+
+
+def test_cache_control_only_on_last_system_block(monkeypatch):
+    a, made = _adapter(lambda p: _response(OK), monkeypatch)
+    req = ModelRequest(system_blocks=["a", "b", "c"], user_content="u", max_tokens=100, timeout_s=5.0)
+    a.generate(req)
+    params = made["client"].calls[0]
+    assert [("cache_control" in b) for b in params["system"]] == [False, False, True]
+    assert params["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in params
+    assert params["messages"] == [{"role": "user", "content": "u"}]
+    assert "thinking" not in params
+
+
+def test_cache_usage_propagates(monkeypatch):
+    usage = dict(input_tokens=10, output_tokens=5, cache_read_input_tokens=900, cache_creation_input_tokens=30)
+    a, _ = _adapter(lambda p: _response_cache(OK, usage), monkeypatch)
+    res = a.generate(REQ)
+    assert (res.input_tokens, res.cache_read_tokens, res.cache_write_tokens) == (10, 900, 30)
+    a, _ = _adapter(lambda p: _response(OK), monkeypatch)  # キャッシュ項目なし -> None
+    res = a.generate(REQ)
+    assert res.cache_read_tokens is None and res.cache_write_tokens is None
+
+
+def test_cache_usage_on_refusal(monkeypatch):
+    usage = dict(input_tokens=10, output_tokens=0, cache_read_input_tokens=7, cache_creation_input_tokens=0)
+    a, _ = _adapter(lambda p: _refusal(usage), monkeypatch)
+    with pytest.raises(ModelRefusal) as ei:
+        a.generate(REQ)
+    assert (ei.value.cache_read_tokens, ei.value.cache_write_tokens) == (7, 0)
+
+
+def _refusal(usage):
+    r = _response_cache("", usage)
+    r.stop_reason = "refusal"
+    return r

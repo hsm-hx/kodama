@@ -43,7 +43,7 @@ from kodama.storage.base import (
     NotFound,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: turns に cache_read_tokens / cache_write_tokens を追加（1 からは自動移行）
 MAX_ERROR_CHARS = 500
 
 _SCHEMA = """
@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS turns (
     model TEXT,
     usage_input_tokens INTEGER,
     usage_output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
     persona_version_ids TEXT NOT NULL,
     context_memory_version_ids TEXT NOT NULL,
     context_message_ids TEXT NOT NULL,
@@ -221,6 +223,13 @@ class SQLiteStore:
                     "INSERT INTO schema_info(key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
                 )
+            elif int(row["value"]) == 1:
+                # v1 -> v2: 列の追加だけ（既存データはそのまま、新列は NULL=不明）。BEGIN IMMEDIATE 内なので原子的
+                have = {r["name"] for r in c.execute("PRAGMA table_info(turns)")}
+                for col in ("cache_read_tokens", "cache_write_tokens"):
+                    if col not in have:
+                        c.execute(f"ALTER TABLE turns ADD COLUMN {col} INTEGER")
+                c.execute("UPDATE schema_info SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),))
             elif int(row["value"]) != SCHEMA_VERSION:
                 raise InvalidState(
                     f"unsupported database schema_version {row['value']} (expected {SCHEMA_VERSION})"
@@ -347,6 +356,8 @@ class SQLiteStore:
                 model=model,
                 usage_input_tokens=None,
                 usage_output_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
                 persona_version_ids=tuple(persona_version_ids),
                 context_memory_version_ids=tuple(context_memory_version_ids),
                 context_message_ids=tuple(context_message_ids),
@@ -426,8 +437,10 @@ class SQLiteStore:
             usage = usage or Usage()
             c.execute(
                 "UPDATE turns SET status = 'completed', finished_at = ?, usage_input_tokens = ?,"
-                " usage_output_tokens = ?, model = COALESCE(?, model) WHERE id = ?",
-                (now, usage.input_tokens, usage.output_tokens, model, turn_id),
+                " usage_output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?,"
+                " model = COALESCE(?, model) WHERE id = ?",
+                (now, usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
+                 usage.cache_write_tokens, model, turn_id),
             )
         return created
 
@@ -444,13 +457,16 @@ class SQLiteStore:
             usage = usage or Usage()
             c.execute(
                 "UPDATE turns SET status = ?, finished_at = ?, error = ?,"
-                " usage_input_tokens = ?, usage_output_tokens = ? WHERE id = ?",
+                " usage_input_tokens = ?, usage_output_tokens = ?,"
+                " cache_read_tokens = ?, cache_write_tokens = ? WHERE id = ?",
                 (
                     status.value,
                     self._now(),
                     (error or "")[:MAX_ERROR_CHARS] or None,
                     usage.input_tokens,
                     usage.output_tokens,
+                    usage.cache_read_tokens,
+                    usage.cache_write_tokens,
                     turn_id,
                 ),
             )

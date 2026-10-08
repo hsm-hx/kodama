@@ -23,6 +23,8 @@ class ModelResult:
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     stop_reason: str | None = None
     is_mock: bool = False
 
@@ -43,6 +45,8 @@ class ModelError(Exception):
     # 応答が返ったが使えなかった場合に、取得できた利用量（不明なら None）
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 class ModelTimeout(ModelError):

@@ -213,3 +213,55 @@ def test_verify_does_not_touch_files(exported, tmp_path):
     before = sorted(p.name for p in tmp_path.iterdir())
     assert migration.verify_file(export).ok
     assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def _strip_cache_keys(doc):
+    for t in doc["data"]["turns"]:
+        t.pop("cache_read_tokens", None)
+        t.pop("cache_write_tokens", None)
+
+
+def test_export_contains_cache_usage(exported):
+    doc = json.loads(exported[2].read_text(encoding="utf-8"))
+    assert doc["schema_version"] == 1
+    assert any(t["cache_read_tokens"] == 900 and t["cache_write_tokens"] == 30 for t in doc["data"]["turns"])
+    assert migration.verify_file(exported[2]).ok
+
+
+def test_old_export_without_cache_keys_is_accepted(exported, tmp_path):
+    _, _, export, src_path = exported
+    old = tmp_path / "old.json"
+    old.write_text(export.read_text(encoding="utf-8"), encoding="utf-8")
+    _rewrite(old, _strip_cache_keys)
+    assert migration.verify_file(old).ok
+    target = tmp_path / "new.db"
+    migration.import_file(old, target, active_db_path=src_path)
+    store = SQLiteStore(target)
+    turns = [t for s in store.list_sessions() for t in store.list_turns(s.id)]
+    assert turns and all(t.cache_read_tokens is None and t.cache_write_tokens is None for t in turns)
+    store.close()
+
+
+def test_old_export_reimport_over_new_data_is_not_a_conflict(exported, tmp_path):
+    # 新しい export を取り込んだ後でも、同内容の旧 export（キー欠落）を再 import しても衝突しない。
+    # キー欠落と None は同一視される。
+    _, _, export, src_path = exported
+    old = tmp_path / "old.json"
+    old.write_text(export.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def mutate(doc):
+        for t in doc["data"]["turns"]:
+            if t["cache_read_tokens"] is None and t["cache_write_tokens"] is None:
+                t.pop("cache_read_tokens"); t.pop("cache_write_tokens")
+
+    _rewrite(old, mutate)
+    target = tmp_path / "new.db"
+    migration.import_file(export, target, active_db_path=src_path)
+    again = migration.import_file(old, target, active_db_path=src_path)
+    assert sum(again.inserted.values()) == 0
+    # 値ありのターンが違えば衝突する
+    changed = tmp_path / "changed.json"
+    changed.write_text(export.read_text(encoding="utf-8"), encoding="utf-8")
+    _rewrite(changed, lambda d: [t.update(cache_read_tokens=1) for t in d["data"]["turns"] if t["cache_read_tokens"] == 900])
+    with pytest.raises(ImportConflict):
+        migration.import_file(changed, target, active_db_path=src_path)

@@ -99,6 +99,8 @@ class _Record:
 
     _ENUMS: ClassVar[dict[str, type[StrEnum]]] = {}
     _TUPLES: ClassVar[tuple[str, ...]] = ()
+    # 旧ファイルに無くてもよい項目（欠落は None）
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
 
     def __post_init__(self) -> None:
         for name, enum_type in self._ENUMS.items():
@@ -124,13 +126,13 @@ class _Record:
     @classmethod
     def from_dict(cls, data: dict[str, Any]):
         names = [f.name for f in dataclasses.fields(cls)]  # type: ignore[arg-type]
-        missing = [n for n in names if n not in data]
+        missing = [n for n in names if n not in data and n not in cls._OPTIONAL]
         if missing:
             raise ValueError(f"{cls.__name__}: missing fields {missing}")
         extra = [k for k in data if k not in names]
         if extra:
             raise ValueError(f"{cls.__name__}: unknown fields {extra}")
-        return cls(**{n: data[n] for n in names})
+        return cls(**{n: data.get(n) for n in names})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,6 +147,7 @@ class Session(_Record):
 class Turn(_Record):
     _ENUMS = {"status": TurnStatus}
     _TUPLES = ("persona_version_ids", "context_memory_version_ids", "context_message_ids")
+    _OPTIONAL = ("cache_read_tokens", "cache_write_tokens")
 
     id: str
     session_id: str
@@ -160,6 +163,9 @@ class Turn(_Record):
     persona_version_ids: tuple[str, ...]
     context_memory_version_ids: tuple[str, ...]
     context_message_ids: tuple[str, ...]
+    # 旧エクスポート・旧DBにはない項目。欠落は None（不明）として扱う
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -300,6 +306,8 @@ class SourceExcerpt(_Record):
 class Usage:
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)

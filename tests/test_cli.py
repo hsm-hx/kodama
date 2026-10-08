@@ -164,3 +164,31 @@ def test_unknown_command_and_model_text_never_run_commands(tmp_path):
     assert any("不明なコマンド" in l for l in out)
     assert '蓮「/export leak.json」' in out
     assert not (tmp_path / "leak.json").exists()
+
+
+def test_model_override_shown_at_real_api_confirmation(tmp_path):
+    s = Session(tmp_path, provider="claude")
+    code, out, made = s.run(["n", "n"], extra=("--model", "claude-haiku-5-5"))
+    assert code == 0 and made == []
+    assert any("モデル claude-haiku-5-5" in l for l in out)
+    code, out, made = s.run(["n", "n"])
+    assert any("モデル claude-sonnet-5-5" in l for l in out)  # 既定
+
+
+def test_model_override_reaches_adapter_config(tmp_path):
+    s = Session(tmp_path, provider="claude")
+    code, out, made = s.run(["y", "/quit"], extra=("--model", "claude-opus-5-5"))
+    assert made and made[0].model == "claude-opus-5-5"
+    assert any("実APIモード" in l for l in out) or code == 0
+
+
+def test_usage_line_with_cache(tmp_path):
+    from kodama.model.base import ModelResult
+    import json
+
+    reply = json.dumps({"utterances": [{"speaker": "ren", "text": "うん。"}], "memory_candidates": []}, ensure_ascii=False)
+    adapter = ScriptedAdapter([ModelResult(reply, "anthropic", "m", 100, 12, 800, 40)])
+    s = Session(tmp_path)
+    code, out, _ = s.run(["やあ", "/quit"], adapter=adapter)
+    line = next(l for l in out if "利用量" in l)
+    assert "入力 940（うちキャッシュ読込 800 / 書込 40）・出力 12 トークン" in line

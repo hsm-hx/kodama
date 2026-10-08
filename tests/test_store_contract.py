@@ -41,7 +41,10 @@ def test_turn_statuses_and_usage(store, seed):
     assert tuple(t.status for t in turns) == seed.turn_statuses
     assert (turns[0].usage_input_tokens, turns[0].usage_output_tokens) == (120, 40)
     assert turns[1].usage_input_tokens is None  # unknown stays unknown
+    assert (turns[0].cache_read_tokens, turns[0].cache_write_tokens) == (900, 30)
+    assert (turns[1].cache_read_tokens, turns[1].cache_write_tokens) == (None, None)
     assert turns[2].error == "timeout"
+    assert (turns[2].cache_read_tokens, turns[2].cache_write_tokens) == (7, 0)
     assert seed.persona_ren_v2 in turns[0].persona_version_ids
 
 
@@ -191,3 +194,38 @@ def test_complete_and_fail_only_from_pending(store, seed):
     with pytest.raises(InvalidState):
         store.complete_turn(failed, [("ren", "遅れて届いた返答")])
     assert store.fail_turn(seed.turn_ids[0], TurnStatus.FAILED, "x").status == TurnStatus.COMPLETED
+
+
+
+def test_old_schema_db_is_migrated_in_place(tmp_path):
+    import sqlite3
+
+    from kodama.domain import Usage
+    from kodama.storage.sqlite import SQLiteStore
+
+    path = tmp_path / "old.db"
+    s = SQLiteStore(path)
+    sess = s.create_session("旧")
+    t, _ = s.begin_turn(sess.id, "こんにちは", "mock", "m")
+    s.complete_turn(t.id, [("ren", "うん。")], Usage(11, 3))
+    s.close()
+    # v1 スキーマを再現: 新列を落として schema_version を 1 に戻す
+    raw = sqlite3.connect(path)
+    raw.execute("ALTER TABLE turns DROP COLUMN cache_read_tokens")
+    raw.execute("ALTER TABLE turns DROP COLUMN cache_write_tokens")
+    raw.execute("UPDATE schema_info SET value = '1' WHERE key = 'schema_version'")
+    raw.commit()
+    cols = {r[1] for r in raw.execute("PRAGMA table_info(turns)")}
+    assert "cache_read_tokens" not in cols
+    raw.close()
+
+    s2 = SQLiteStore(path)
+    turns = s2.list_turns(sess.id)
+    assert len(turns) == 1 and (turns[0].usage_input_tokens, turns[0].cache_read_tokens) == (11, None)
+    assert [m.text for m in s2.list_messages(sess.id)] == ["こんにちは", "うん。"]
+    t2, _ = s2.begin_turn(sess.id, "続き", "mock", "m")
+    s2.complete_turn(t2.id, [("ren", "はい。")], Usage(1, 1, 50, 5))
+    assert s2.get_turn(t2.id).cache_write_tokens == 5
+    s2.close()
+    s3 = SQLiteStore(path)  # 再オープンしても問題なし
+    s3.close()
