@@ -1,0 +1,25 @@
+[project]
+name = "kodama"
+version = "0.1.0"
+description = "蓮と葵と話すローカル会話CLI（記憶つき）"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+claude = ["anthropic>=1.0"]
+
+[project.scripts]
+kodama = "kodama.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kodama"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

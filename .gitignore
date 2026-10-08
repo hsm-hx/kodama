@@ -1,0 +1,23 @@
+# 秘密
+.env
+.env.*
+!.env.example
+# ローカルデータ（会話ログ・DB・移行ファイル・取り込み資料）
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+exports/
+imports/
+kodama.toml
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/

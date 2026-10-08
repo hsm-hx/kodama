@@ -1,0 +1,21 @@
+# kodama の設定例。kodama.toml にコピーして使います（kodama.toml は Git 管理外）。
+# APIキーなどの秘密はここに書かないでください。環境変数で設定します。
+
+provider = "mock"            # "mock"（既定・APIキー不要）か "claude"（実API。起動時に確認あり）
+model = "claude-opus-5-5"    # provider = "claude" のときのモデルID
+effort = "low"               # low / medium / high / xhigh / max
+api_key_env = "ANTHROPIC_API_KEY"  # キーを読む環境変数の「名前」
+
+db_path = "data/kodama.db"   # 会話と記憶の保存先（ローカルの SQLite。暗号化はされません）
+personas_dir = "personas"
+timezone = "Asia/Tokyo"      # 日時の表示と生成に使う地域
+
+max_tokens = 2000            # 1回の返答の出力上限
+timeout_seconds = 60         # 1回の呼び出しのタイムアウト（自動再試行はしません）
+
+max_recent_messages = 20     # 送る直近会話の件数
+max_memories = 8             # 送る記憶の件数上限
+max_candidates_scanned = 50  # 検索で見る候補の上限
+max_link_hops = 1            # 関連リンクをたどる段数（0 か 1）
+max_links_per_node = 10
+max_context_chars = 12000    # 送る内容の文字数上限（超えたら古い会話から外す。原文は消さない）
