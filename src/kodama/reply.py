@@ -10,15 +10,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from kodama.gestures import capabilities, normalize_gesture
+
 KINDS = ("user_stated", "character_view", "imagination")
 MAX_UTTERANCES = 4
 MAX_TEXT_CHARS = 1000
 MAX_CANDIDATES = 5
 
 
-def reply_schema(character_ids: Sequence[str]) -> dict[str, Any]:
+def reply_schema(character_ids: Sequence[str], gesture_capabilities=None) -> dict[str, Any]:
     """出力の JSON Schema。話者の enum は人物設定パックのキャラクターID。"""
     speakers = list(character_ids)
+    allowed = capabilities(speakers, gesture_capabilities)
     return {
         "type": "object",
         "properties": {
@@ -29,6 +32,7 @@ def reply_schema(character_ids: Sequence[str]) -> dict[str, Any]:
                     "properties": {
                         "speaker": {"type": "string", "enum": speakers},
                         "text": {"type": "string"},
+                        "gesture": {"type": "string", "enum": list(dict.fromkeys(["none", *(g for ids in allowed.values() for g in ids)]))},
                     },
                     "required": ["speaker", "text"],
                     "additionalProperties": False,
@@ -64,6 +68,7 @@ class ParsedReply:
     utterances: list[tuple[str, str]]
     candidates: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    gestures: list[str] = field(default_factory=list)
 
 
 _FENCE_RE = re.compile(r"\A```(?:json)?\s*\n(.*)\n```\Z", re.DOTALL)
@@ -116,7 +121,7 @@ def _parse_candidate(c: Any, speakers: Sequence[str]) -> tuple[dict[str, Any] | 
     }, None
 
 
-def parse_reply(raw: str, character_ids: Sequence[str]) -> ParsedReply:
+def parse_reply(raw: str, character_ids: Sequence[str], gesture_capabilities=None) -> ParsedReply:
     speakers = tuple(character_ids)
     data = _extract_json(raw)
     if not isinstance(data, dict):
@@ -128,8 +133,9 @@ def parse_reply(raw: str, character_ids: Sequence[str]) -> ParsedReply:
     if not isinstance(utts, list) or not (1 <= len(utts) <= MAX_UTTERANCES):
         raise InvalidReply(f"発話は1〜{MAX_UTTERANCES}件の配列である必要があります")
     utterances: list[tuple[str, str]] = []
+    gestures: list[str] = []
     for u in utts:
-        if not isinstance(u, dict) or set(u) - {"speaker", "text"}:
+        if not isinstance(u, dict) or set(u) - {"speaker", "text", "gesture"}:
             raise InvalidReply("発話の形式が不正です")
         speaker = u.get("speaker")
         if speaker not in speakers:
@@ -141,6 +147,7 @@ def parse_reply(raw: str, character_ids: Sequence[str]) -> ParsedReply:
         if len(text) > MAX_TEXT_CHARS:
             raise InvalidReply(f"発話が長すぎます（{len(text)}字）")
         utterances.append((speaker, text))
+        gestures.append(normalize_gesture(speaker, u.get("gesture"), gesture_capabilities))
 
     warnings: list[str] = []
     candidates: list[dict[str, Any]] = []
@@ -159,4 +166,4 @@ def parse_reply(raw: str, character_ids: Sequence[str]) -> ParsedReply:
             warnings.append(f"不正な記憶候補を捨てました: {warn}")
         else:
             candidates.append(parsed)
-    return ParsedReply(utterances=utterances, candidates=candidates, warnings=warnings)
+    return ParsedReply(utterances=utterances, candidates=candidates, warnings=warnings, gestures=gestures)

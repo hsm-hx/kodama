@@ -11,6 +11,7 @@ from kodama.config import Config
 from kodama.domain import Cast, MemoryKind, Message, PersonaVersion, TranscriptEntry, TurnStatus, parse_iso
 from kodama.model.base import ModelRequest
 from kodama.reply import reply_schema
+from kodama.gestures import capabilities, gesture_rules
 from kodama.personas import PersonaPack, strip_meta
 from kodama.recall import ExcludedMemory, RecallLimits, RecalledMemory, recall
 
@@ -254,18 +255,20 @@ def _fit(plan: ContextPlan, max_chars: int, tz: ZoneInfo) -> None:
         _render(plan, tz)
 
 
-def to_model_request(plan: ContextPlan, config: Config) -> ModelRequest:
+def to_model_request(plan: ContextPlan, config: Config, gesture_capabilities=None) -> ModelRequest:
+    allowed = capabilities(plan.pack.cast.character_ids, gesture_capabilities)
     return ModelRequest(
-        system_blocks=list(plan.system_blocks),
+        system_blocks=list(plan.system_blocks) + ([gesture_rules(allowed)] if any(allowed.values()) else []),
         user_content=plan.user_content,
         max_tokens=config.max_tokens,
         timeout_s=config.timeout_seconds,
         metadata={
             "current_input": plan.current_input,
+            "gesture_capabilities": allowed,
             "characters": [
                 {"id": c.id, "display_name": c.display_name, "aliases": list(c.address_aliases)}
                 for c in plan.pack.characters
             ],
         },
-        output_schema=reply_schema(plan.pack.cast.character_ids),
+        output_schema=reply_schema(plan.pack.cast.character_ids, allowed),
     )

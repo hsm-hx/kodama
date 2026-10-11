@@ -23,6 +23,7 @@ from kodama.model.base import (
 )
 from kodama.personas import PersonaFile, PersonaPack, load_persona_file, load_persona_files, unified_diff
 from kodama.reply import InvalidReply, parse_reply
+from kodama.gestures import capabilities
 
 
 @dataclass
@@ -31,6 +32,7 @@ class TurnOutcome:
     turn_id: str | None
     user_message_id: str | None = None
     replies: list[Message] = field(default_factory=list)
+    reply_gestures: dict[str, str] = field(default_factory=dict)
     error_kind: str | None = None  # invalid_reply / timeout / connection / api / refusal / config / interrupted / storage / unexpected
     error_message: str | None = None
     outcome_unknown: bool = False  # 送信後に結果が分からない（課金の有無も不明）
@@ -91,11 +93,13 @@ class ConversationService:
         config: Config,
         pack: PersonaPack,
         clock: Callable[[], datetime] | None = None,
+        gesture_capabilities=None,
     ):
         self.store = store
         self.pack = pack
         self.adapter = adapter
         self.config = config
+        self.gesture_capabilities = capabilities(pack.cast.character_ids, gesture_capabilities)
         self._tz = ZoneInfo(config.timezone)
         self._clock = clock or (lambda: datetime.now(self._tz))
 
@@ -110,7 +114,7 @@ class ConversationService:
 
     def send(self, session_id: str, text: str) -> TurnOutcome:
         plan = self.preview(session_id, text)
-        request = to_model_request(plan, self.config)
+        request = to_model_request(plan, self.config, self.gesture_capabilities)
         turn, user_msg = self.store.begin_turn(
             session_id,
             text,
@@ -152,7 +156,7 @@ class ConversationService:
         outcome.cache_read_tokens, outcome.cache_write_tokens = result.cache_read_tokens, result.cache_write_tokens
         usage = Usage(result.input_tokens, result.output_tokens, result.cache_read_tokens, result.cache_write_tokens)
         try:
-            parsed = parse_reply(result.raw_text, self.pack.cast.character_ids)
+            parsed = parse_reply(result.raw_text, self.pack.cast.character_ids, self.gesture_capabilities)
         except InvalidReply as e:
             outcome.error_kind = "invalid_reply"
             outcome.error_message = f"モデルの返答が形式に合わないため、会話として保存しませんでした（{e}）"
@@ -190,6 +194,7 @@ class ConversationService:
             return outcome
         outcome.ok = True
         outcome.replies = replies
+        outcome.reply_gestures = {m.id: g for m, g in zip(replies, parsed.gestures)}
         if self.config.memory_auto_approve and drafts:
             try:
                 outcome.saved_memories = [

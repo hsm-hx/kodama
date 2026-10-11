@@ -11,6 +11,7 @@ from collections import deque
 from typing import Any, Iterable
 
 from .base import ModelRequest, ModelResult
+from kodama.gestures import normalize_gesture
 
 _CURRENT_INPUT_RE = re.compile(r"<current_input>\s*(.*?)\s*</current_input>", re.DOTALL)
 
@@ -49,6 +50,15 @@ def choose_speakers(user_text: str, characters: list[dict[str, Any]]) -> list[st
     return ids[:2]
 
 
+def choose_gesture(text: str) -> str:
+    # Demonstration only, not a classifier for real conversations.
+    if len(text) > 100 or any(w in text for w in ("悲しい", "つらい", "ごめん", "謝罪", "深刻")):
+        return "none"
+    if any(w in text for w in ("こんにちは", "おはよう", "またね")):
+        return "wave"
+    return "bow" if "ありがとう" in text else "none"
+
+
 class MockAdapter:
     provider = "mock"
     is_mock = True
@@ -63,7 +73,7 @@ class MockAdapter:
         names = {c["id"]: c["display_name"] for c in characters}
         speakers = choose_speakers(_current_input(request), characters)
         payload = {
-            "utterances": [{"speaker": s, "text": f"モックの{names[s]}の台詞です。"} for s in speakers],
+            "utterances": [{"speaker": s, "text": f"モックの{names[s]}の台詞です。", "gesture": normalize_gesture(s, choose_gesture(_current_input(request)), request.metadata.get("gesture_capabilities"))} for s in speakers],
             "memory_candidates": [],
         }
         return ModelResult(

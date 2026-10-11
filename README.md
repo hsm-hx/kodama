@@ -194,3 +194,9 @@ uv run pytest -q
 ## 声の評価
 
 人物設定パックの `evals/voice_cases.json`（見本は `packs/example/evals/voice_cases.json`）に会話ケースを置きます。自動検査（禁句・文末・呼称など）は必要条件にすぎません。自然さやキャラクターの違いは、人が読んで判断します。**モックで合格しても、実モデルで人物が再現できたことにはなりません。** 手順は [evals/README.md](evals/README.md) を参照してください。
+
+## 表示クライアント向けの任意の仕草
+
+`ConversationService(..., gesture_capabilities={"saku": ["nod", "wave"]})` で、表示側が検証済みの ID を話者ごとに渡せます。返答の発話は `{"speaker":"saku","text":"こんにちは。","gesture":"wave"}` の形式です。`gesture` は省略可能で、通常は `none`。重い話・謝罪・長い説明や迷う場面では動かさないようモデルに指示します。パスや骨の値は受け付けません。未知・不正・話者非対応の値は、本文を残して `none` にします。
+
+送信成功時の `TurnOutcome.reply_gestures` は、保存済みメッセージ ID から仕草 ID への対応です。会話・記憶 DB のスキーマは変更せず、表示側で必要な場合のみ別の表示メタデータとして保持します。CLI の既定では能力を渡さず動きません。実 LLM の選択品質は未検証です。
